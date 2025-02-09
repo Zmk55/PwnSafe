@@ -1,3 +1,6 @@
+__version__ = "1.0.0"
+
+
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import paramiko
