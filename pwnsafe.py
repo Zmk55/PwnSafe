@@ -1,19 +1,20 @@
 import customtkinter as ctk
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 import paramiko
 import threading
-
+import os
+import platform
 
 class BackupRestoreApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Backup & Restore Utility")
-        self.geometry("600x400")
+        self.title("PwnSafe - Backup & Restore Utility")
+        self.geometry("700x500")
         ctk.set_appearance_mode("System")  # Options: "Light", "Dark", "System"
         ctk.set_default_color_theme("blue")  # Options: "blue", "green", "dark-blue"
 
         # Header
-        self.header_label = ctk.CTkLabel(self, text="Backup & Restore Utility", font=("Arial", 20, "bold"))
+        self.header_label = ctk.CTkLabel(self, text="PwnSafe - Backup & Restore Utility", font=("Arial", 20, "bold"))
         self.header_label.pack(pady=10)
 
         # Host, Username, Password Section
@@ -48,7 +49,7 @@ class BackupRestoreApp(ctk.CTk):
         self.restore_button.pack(side="left", padx=20, pady=10)
 
         # Output Log
-        self.output_text = ctk.CTkTextbox(self, width=500, height=200, corner_radius=10)
+        self.output_text = ctk.CTkTextbox(self, width=600, height=250, corner_radius=10)
         self.output_text.pack(pady=10, padx=20, fill="x")
 
     def browse_file(self):
@@ -80,15 +81,65 @@ class BackupRestoreApp(ctk.CTk):
 
     def backup(self):
         ssh = self.ssh_connect()
-        if ssh:
-            self.log_message("[INFO] Starting backup...")
-            command = "sudo tar -czf /tmp/backup.tgz /etc/pwnagotchi/ /root/.ssh /home/pi/handshakes"
-            stdin, stdout, stderr = ssh.exec_command(command)
-            errors = stderr.read().decode()
-            if errors:
-                self.log_message(f"[ERROR] {errors}", "red")
+        if not ssh:
+            return  # Connection failed
+
+        self.log_message("[INFO] Starting backup...")
+
+        # Ask the user where to save the backup file locally
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".tgz",
+            filetypes=[("TGZ Files", "*.tgz")]
+        )
+        if not save_path:
+            self.log_message("[ERROR] Backup canceled: No save location selected.", "red")
+            ssh.close()
+            return
+
+        # This command sends tar output to stdout, then we compress it with gzip
+        # so we can capture the entire thing locally, just like your old batch file.
+        command = (
+            "sudo tar --exclude='/etc/pwnagotchi/log/*.log' "
+            "--warning=none -cf - "
+            "/etc/pwnagotchi/ /root/.ssh /home/pi/handshakes "
+            "| gzip -9"
+        )
+
+        stdin, stdout, stderr = ssh.exec_command(command)
+
+        try:
+            # 1) Stream the tar+gzip data to the local file
+            with open(save_path, "wb") as f:
+                while True:
+                    chunk = stdout.read(4096)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+
+            # 2) Read any stderr lines (warnings or errors)
+            errors = stderr.read().decode().strip()
+
+            # 3) Check the exit code of the command
+            exit_code = stdout.channel.recv_exit_status()
+
+            # 4) Decide if we succeeded or failed
+            if exit_code == 0:
+                # tar returned success
+                if errors:
+                    # Some warnings (e.g., "Removing leading '/'") - not fatal
+                    for line in errors.splitlines():
+                        self.log_message(f"[WARNING] {line}", "yellow")
+
+                self.log_message(f"[INFO] Backup successfully saved to: {save_path}")
             else:
-                self.log_message("[INFO] Backup completed successfully!")
+                # Non-zero exit code => real error
+                self.log_message(f"[ERROR] tar failed with exit code {exit_code}", "red")
+                if errors:
+                    self.log_message(errors, "red")
+
+        except Exception as e:
+            self.log_message(f"[ERROR] Failed to download backup stream: {e}", "red")
+        finally:
             ssh.close()
 
     def start_restore(self):
@@ -96,31 +147,53 @@ class BackupRestoreApp(ctk.CTk):
 
     def restore(self):
         ssh = self.ssh_connect()
-        if ssh:
-            backup_file = self.file_entry.get()
-            if not backup_file:
-                self.log_message("[ERROR] No backup file selected!", "red")
-                return
+        if not ssh:
+            return  # Connection failed
 
-            self.log_message(f"[INFO] Uploading {backup_file}...")
-            try:
-                sftp = ssh.open_sftp()
-                sftp.put(backup_file, "/tmp/restore.tgz")
-                sftp.close()
-                self.log_message("[INFO] File uploaded successfully.")
-            except Exception as e:
-                self.log_message(f"[ERROR] Failed to upload file: {e}", "red")
-                return
-
-            self.log_message("[INFO] Restoring backup on remote device...")
-            command = "sudo tar -xzvf /tmp/restore.tgz -C /"
-            stdin, stdout, stderr = ssh.exec_command(command)
-            errors = stderr.read().decode()
-            if errors:
-                self.log_message(f"[ERROR] {errors}", "red")
-            else:
-                self.log_message("[INFO] Restore completed successfully!")
+        backup_file = self.file_entry.get()
+        if not backup_file:
+            self.log_message("[ERROR] No backup file selected!", "red")
             ssh.close()
+            return
+
+        self.log_message(f"[INFO] Uploading {backup_file}...")
+        try:
+            sftp = ssh.open_sftp()
+            sftp.put(backup_file, "/tmp/restore.tgz")
+            sftp.close()
+            self.log_message("[INFO] File uploaded successfully.")
+        except Exception as e:
+            self.log_message(f"[ERROR] Failed to upload file: {e}", "red")
+            ssh.close()
+            return
+
+        self.log_message("[INFO] Restoring backup on remote device...")
+        command = "sudo tar -xzvf /tmp/restore.tgz -C /"
+        stdin, stdout, stderr = ssh.exec_command(command)
+        errors = stderr.read().decode().strip()
+        output = stdout.read().decode()
+
+        # Check exit code to see if restore succeeded
+        exit_code = stdout.channel.recv_exit_status()
+        if exit_code == 0:
+            # Success
+            if errors:
+                # Could be warnings
+                self.log_message(f"[WARNING] {errors}", "yellow")
+            self.log_message(f"[INFO] Restore Output: {output}")
+            self.log_message("[INFO] Restore completed successfully!")
+        else:
+            # Failure
+            self.log_message(f"[ERROR] tar restore failed with exit code {exit_code}", "red")
+            if errors:
+                self.log_message(errors, "red")
+
+        ssh.close()
+
+    def detect_platform(self):
+        current_platform = platform.system().lower()
+        self.log_message(f"[INFO] Running on {current_platform}.")
+        return current_platform
 
 
 if __name__ == "__main__":
