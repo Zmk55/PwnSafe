@@ -1,0 +1,63 @@
+# Docker Compose configuration for PwnSafe development
+
+version: '3.8'
+
+services:
+  pwnsafe:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: pwnsafe-app
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DISPLAY=${DISPLAY}
+    volumes:
+      - .:/app
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    network_mode: host
+    stdin_open: true
+    tty: true
+    # Uncomment if you need to run GUI applications
+    # privileged: true
+
+  pwnsafe-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: pwnsafe-dev
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
+      - DISPLAY=${DISPLAY}
+    volumes:
+      - .:/app
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - pwnsafe-cache:/root/.cache
+    network_mode: host
+    stdin_open: true
+    tty: true
+    working_dir: /app
+    command: /bin/bash
+
+  # Test SSH server for development/testing
+  test-ssh:
+    image: lscr.io/linuxserver/openssh-server:latest
+    container_name: pwnsafe-test-ssh
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - USER_NAME=testuser
+      - USER_PASSWORD=testpass
+      - SUDO_ACCESS=true
+    ports:
+      - "2222:2222"
+    volumes:
+      - test-ssh-data:/config
+    restart: unless-stopped
+
+volumes:
+  pwnsafe-cache:
+  test-ssh-data:
