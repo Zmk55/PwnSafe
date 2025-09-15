@@ -24,6 +24,7 @@ def build_linux_executable():
         "--onefile",                    # Create a single executable file
         "--windowed",                   # Hide console window (GUI app)
         "--name=PwnSafe",               # Name of the executable
+        "--icon=icon.ico",              # Icon file
         "--add-data=README.md:.",       # Include README
         "--hidden-import=customtkinter",
         "--hidden-import=paramiko",
