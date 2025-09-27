@@ -17,7 +17,7 @@ from pathlib import Path
 class BackupRestoreApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("PwnSafe v1.0.0 - Cyberpunk Backup & Restore Utility")
+        self.title("PwnSafe v1.0.0 - Backup & Restore Utility")
         self.geometry("800x600")
         
         # Set dystopian hacker theme
@@ -36,7 +36,7 @@ class BackupRestoreApp(ctk.CTk):
         self.main_frame = ctk.CTkFrame(self, corner_radius=10)
         self.main_frame.pack(fill="both", expand=True, padx=20, pady=20)
 
-        # Header with cyberpunk styling
+        # Header with modern styling
         self.header_frame = ctk.CTkFrame(self.main_frame, corner_radius=10, fg_color="transparent")
         self.header_frame.pack(fill="x", padx=20, pady=(20, 10))
         
@@ -50,13 +50,13 @@ class BackupRestoreApp(ctk.CTk):
         
         self.subtitle_label = ctk.CTkLabel(
             self.header_frame,
-            text="CYBERPUNK BACKUP & RESTORE UTILITY",
+            text="BACKUP & RESTORE UTILITY",
             font=("Courier New", 12),
             text_color="#00ffff"
         )
         self.subtitle_label.pack()
 
-        # Connection Section with cyberpunk styling
+        # Connection Section with modern styling
         self.connection_frame = ctk.CTkFrame(self.main_frame, corner_radius=10)
         self.connection_frame.pack(fill="x", padx=20, pady=10)
         
@@ -242,7 +242,7 @@ class BackupRestoreApp(ctk.CTk):
         )
         self.snapshot_button.grid(row=3, column=0, columnspan=3, padx=20, pady=10)
 
-        # Output Log with cyberpunk styling
+        # Output Log with modern styling
         self.output_frame = ctk.CTkFrame(self.main_frame, corner_radius=10)
         self.output_frame.pack(fill="both", expand=True, padx=20, pady=10)
         
@@ -267,7 +267,7 @@ class BackupRestoreApp(ctk.CTk):
         self.output_text.grid(row=1, column=0, padx=15, pady=(0, 15), sticky="nsew")
         
         # Initialize with welcome message
-        self.log_message(">>> PwnSafe v1.0.0 - Cyberpunk Backup & Restore Utility <<<")
+        self.log_message(">>> PwnSafe v1.0.0 - Backup & Restore Utility <<<")
         self.log_message(">>> System initialized. Ready for operations. <<<")
         self.log_message(">>> Target system connection required. <<<")
         
@@ -286,8 +286,8 @@ class BackupRestoreApp(ctk.CTk):
         self.start_pwnagotchi_detection()
 
     def _setup_hacker_theme(self):
-        """Setup the cyberpunk hacker theme colors and styling."""
-        # Custom color scheme for cyberpunk theme
+        """Setup the modern hacker theme colors and styling."""
+        # Custom color scheme for modern theme
         self.hacker_colors = {
             'primary': '#00ff00',      # Matrix green
             'secondary': '#00ffff',    # Cyan
@@ -307,7 +307,7 @@ class BackupRestoreApp(ctk.CTk):
             self.file_entry.insert(0, filename)
 
     def log_message(self, message, level="INFO"):
-        """Log messages with cyberpunk styling."""
+        """Log messages with modern styling."""
         import datetime
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         
@@ -320,7 +320,7 @@ class BackupRestoreApp(ctk.CTk):
             "SYSTEM": "#ff6600"     # Orange
         }
         
-        # Format message with cyberpunk styling
+        # Format message with modern styling
         if level == "ERROR":
             formatted_msg = f"[{timestamp}] >>> ERROR: {message} <<<\n"
         elif level == "SUCCESS":
@@ -538,7 +538,7 @@ class BackupRestoreApp(ctk.CTk):
         # Subtitle
         subtitle_label = ctk.CTkLabel(
             main_frame,
-            text="Cyberpunk Backup & Restore Utility",
+            text="Backup & Restore Utility",
             font=("Courier New", 14),
             text_color="#00ffff"
         )
@@ -547,7 +547,7 @@ class BackupRestoreApp(ctk.CTk):
         # Description
         desc_text = """PwnSafe is a professional-grade backup and restore utility 
 designed specifically for Pwnagotchi devices. Built with a 
-unique cyberpunk aesthetic, it provides seamless backup 
+unique modern aesthetic, it provides seamless backup 
 and restore operations with automatic Pwnagotchi detection 
 and internet connection sharing capabilities."""
         

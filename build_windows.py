@@ -71,7 +71,7 @@ def create_installer_script():
     """Create a simple installer script."""
     installer_content = """@echo off
 echo ========================================
-echo    PwnSafe v1.0.0 - Cyberpunk Edition
+echo    PwnSafe v1.0.0 - Professional Edition
 echo ========================================
 echo.
 echo Installing PwnSafe...

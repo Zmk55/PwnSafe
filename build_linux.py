@@ -71,7 +71,7 @@ def create_installer_script():
     """Create a simple installer script for Linux."""
     installer_content = """#!/bin/bash
 echo "========================================"
-echo "   PwnSafe v1.0.0 - Cyberpunk Edition"
+echo "   PwnSafe v1.0.0 - Professional Edition"
 echo "========================================"
 echo ""
 echo "Installing PwnSafe..."
@@ -93,7 +93,7 @@ cat > "$DESKTOP_ENTRY" << EOF
 Version=1.0
 Type=Application
 Name=PwnSafe
-Comment=Cyberpunk Backup & Restore Utility
+Comment=Backup & Restore Utility
 Exec=$INSTALL_DIR/PwnSafe
 Icon=applications-system
 Terminal=false
@@ -155,7 +155,7 @@ cat > PwnSafe.AppDir/usr/share/applications/pwnsafe.desktop << EOF
 Version=1.0
 Type=Application
 Name=PwnSafe
-Comment=Cyberpunk Backup & Restore Utility
+Comment=Backup & Restore Utility
 Exec=pwnsafe
 Icon=pwnsafe
 Terminal=false
