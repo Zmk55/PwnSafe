@@ -71,7 +71,7 @@ def create_installer_script():
     """Create a simple installer script for Linux."""
     installer_content = """#!/bin/bash
 echo "========================================"
-echo "   PwnSafe v1.0.0 - Professional Edition"
+echo "   PwnSafe v1.3.0 - Professional Edition"
 echo "========================================"
 echo ""
 echo "Installing PwnSafe..."
