@@ -19,10 +19,6 @@ PwnSafe is a Python-based GUI utility designed to facilitate seamless backup and
 
 ## ✨ Features
 
-<div align="center">
-<img src="logo-square.png" alt="PwnSafe Square Logo" width="100" height="100">
-</div>
-
 ### 🔧 Core Functionality
 - **💾 Backup Functionality**: Create compressed backups of remote directories and securely download them to your local machine
 - **📤 Restore Functionality**: Upload a backup file from your local machine and extract it on a remote system
