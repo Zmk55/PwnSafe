@@ -1,19 +1,70 @@
+<div align="center">
+
 # PwnSafe - Backup & Restore Utility
 
-PwnSafe is a Python-based GUI utility designed to facilitate seamless backup and restore operations on remote systems. With a user-friendly interface, PwnSafe simplifies the process of securely transferring files over SSH, making it ideal for managing critical data.
+<img src="logo.png" alt="PwnSafe Logo" width="200" height="200">
+
+**A Modern Hacker-Themed Backup & Restore Utility**
+
+[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/Zmk55/PwnSafe/releases)
+[![Python](https://img.shields.io/badge/python-3.12+-green.svg)](https://python.org)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg)](https://github.com/Zmk55/PwnSafe)
+
+</div>
+
+PwnSafe is a Python-based GUI utility designed to facilitate seamless backup and restore operations on remote systems. With a modern hacker-themed interface, PwnSafe simplifies the process of securely transferring files over SSH, making it ideal for managing critical data and Pwnagotchi devices.
 
 ---
 
-## Features
-- **Backup Functionality**: Create compressed backups of remote directories and securely download them to your local machine.
-- **Restore Functionality**: Upload a backup file from your local machine and extract it on a remote system.
-- **Cross-Platform Compatibility**: Works on both Windows and Linux systems.
-- **User-Friendly Interface**: Built with `customtkinter` for an intuitive experience.
-- **Error Logging**: Provides detailed logs for debugging and tracking the status of operations.
+## ✨ Features
+
+<div align="center">
+<img src="logo-square.png" alt="PwnSafe Square Logo" width="100" height="100">
+</div>
+
+### 🔧 Core Functionality
+- **💾 Backup Functionality**: Create compressed backups of remote directories and securely download them to your local machine
+- **📤 Restore Functionality**: Upload a backup file from your local machine and extract it on a remote system
+- **🌐 Cross-Platform Compatibility**: Works on Windows, Linux, and macOS systems
+- **🎨 Modern Hacker Theme**: Sleek, professional interface with dark theme styling
+- **📝 Comprehensive Logging**: Detailed logs for debugging and tracking operation status
+
+### 🤖 Pwnagotchi Integration
+- **🔍 Auto-Detection**: Automatically detect and connect to Pwnagotchi devices
+- **📸 Snapshot Detection**: Track device connections using MAC address monitoring
+- **🌐 Network Configuration**: Auto-configure network settings for Pwnagotchi connectivity
+- **🔄 Reconnection Monitoring**: Persistent connection tracking and automatic reconnection
+- **📡 SSH Connectivity**: Built-in SSH testing and connection validation
+
+### 🛠️ Advanced Features
+- **🖱️ Enhanced Scrolling**: Improved mouse wheel support for better navigation
+- **📱 Responsive Design**: Adaptive layout that works on different screen sizes
+- **🎯 Professional UI**: Clean, modern interface with consistent theming
+- **⚡ Performance Optimized**: Fast, efficient backup and restore operations
 
 ---
 
-## Requirements
+## 🚀 Quick Start
+
+<div align="center">
+
+### Download & Run
+[![Download](https://img.shields.io/badge/Download-Latest%20Release-green.svg)](https://github.com/Zmk55/PwnSafe/releases/latest)
+
+**Latest Version: v1.3.0**
+
+</div>
+
+1. **Download** the latest release from [GitHub Releases](https://github.com/Zmk55/PwnSafe/releases/latest)
+2. **Extract** the archive to your desired location
+3. **Run** the executable: `./PwnSafe` (Linux) or `PwnSafe.exe` (Windows)
+4. **Connect** to your remote system or Pwnagotchi device
+5. **Backup** or **Restore** your data with ease!
+
+---
+
+## 📋 Requirements
 
 ### Python Dependencies
 - `customtkinter`
@@ -127,6 +178,24 @@ See [CHANGELOG.md](CHANGELOG.md) for a detailed history of updates and features.
 
 ---
 
-## Contact
-For questions or feedback, feel free to open an issue or reach out via GitHub!
+---
+
+<div align="center">
+
+## 🤝 Contact & Support
+
+<img src="logo.png" alt="PwnSafe Logo" width="150" height="150">
+
+**Need help or have questions?**
+
+- 🐛 **Bug Reports**: [Open an Issue](https://github.com/Zmk55/PwnSafe/issues)
+- 💡 **Feature Requests**: [Start a Discussion](https://github.com/Zmk55/PwnSafe/discussions)
+- 📧 **General Questions**: [GitHub Discussions](https://github.com/Zmk55/PwnSafe/discussions)
+
+**Made with ❤️ for the cybersecurity community**
+
+[![GitHub](https://img.shields.io/badge/GitHub-Zmk55-black.svg)](https://github.com/Zmk55)
+[![Pwnagotchi](https://img.shields.io/badge/Pwnagotchi-Community-orange.svg)](https://pwnagotchi.org)
+
+</div>
 
