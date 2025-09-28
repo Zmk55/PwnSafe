@@ -1,4 +1,4 @@
-__version__ = "1.0.0"
+__version__ = "1.3.0"
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox, Menu
@@ -11,14 +11,32 @@ import subprocess
 import socket
 import time
 import webbrowser
+import requests
+import json
+import re
 from pathlib import Path
 
 
 class BackupRestoreApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("PwnSafe v1.0.0 - Backup & Restore Utility")
+        self.title("PwnSafe - Backup & Restore Utility")
         self.geometry("800x600")
+        self.configure(bg="#2b2b2b")
+        
+        # Set custom icon
+        try:
+            self.iconbitmap("images/Logo.ico")
+        except:
+            # Fallback to PNG if ICO fails
+            try:
+                import tkinter as tk
+                from PIL import Image, ImageTk
+                icon_image = Image.open("images/Logo.png")
+                icon_photo = ImageTk.PhotoImage(icon_image)
+                self.iconphoto(False, icon_photo)
+            except:
+                pass  # Use default icon if custom icon fails
         
         # Set dystopian hacker theme
         ctk.set_appearance_mode("dark")
@@ -32,33 +50,71 @@ class BackupRestoreApp(ctk.CTk):
         # Create menu bar
         self.create_menu_bar()
 
-        # Create main container
-        self.main_frame = ctk.CTkFrame(self, corner_radius=10)
-        self.main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        # Create scrollable main container
+        self.canvas = ctk.CTkCanvas(self, highlightthickness=0, bg="#2b2b2b")
+        self.scrollbar = ctk.CTkScrollbar(self, orientation="vertical", command=self.canvas.yview)
+        self.scrollable_frame = ctk.CTkFrame(self.canvas, corner_radius=0, fg_color="#2b2b2b")
+        
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+        
+        self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        
+        # Configure the scrollable frame to fill the full width
+        def configure_scroll_region(event):
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+            # Make sure the scrollable frame fills the full width
+            canvas_width = self.canvas.winfo_width()
+            if canvas_width > 1:
+                self.canvas.itemconfig(self.canvas.find_all()[0], width=canvas_width)
+        
+        self.scrollable_frame.bind("<Configure>", configure_scroll_region)
+        self.canvas.bind("<Configure>", configure_scroll_region)
+        
+        # Pack the canvas and scrollbar
+        self.canvas.pack(side="left", fill="both", expand=True, padx=(0, 0), pady=0)
+        self.scrollbar.pack(side="right", fill="y", padx=(0, 0), pady=0)
+        
+        # Bind mousewheel to canvas
+        self.bind_mousewheel()
+        
+        # Use scrollable_frame as main container
+        self.main_frame = self.scrollable_frame
 
         # Header with modern styling
         self.header_frame = ctk.CTkFrame(self.main_frame, corner_radius=10, fg_color="transparent")
-        self.header_frame.pack(fill="x", padx=20, pady=(20, 10))
+        self.header_frame.pack(fill="x", padx=0, pady=0)
         
-        self.header_label = ctk.CTkLabel(
-            self.header_frame, 
-            text="PwnSafe v1.0.0", 
-            font=("Courier New", 24, "bold"),
-            text_color="#00ff00"
-        )
-        self.header_label.pack()
-        
-        self.subtitle_label = ctk.CTkLabel(
-            self.header_frame,
-            text="BACKUP & RESTORE UTILITY",
-            font=("Courier New", 12),
-            text_color="#00ffff"
-        )
-        self.subtitle_label.pack()
+        # Centered logo
+        try:
+            from PIL import Image, ImageTk
+            logo_image = Image.open("images/Logo.png")
+            # Resize logo to appropriate size
+            logo_image = logo_image.resize((120, 120), Image.Resampling.LANCZOS)
+            self.logo_photo = ImageTk.PhotoImage(logo_image)
+            
+            self.logo_label = ctk.CTkLabel(
+                self.header_frame,
+                image=self.logo_photo,
+                text=""
+            )
+            self.logo_label.pack(expand=True, fill="both")
+        except Exception as e:
+            # If logo fails to load, create a placeholder
+            self.logo_label = ctk.CTkLabel(
+                self.header_frame,
+                text="🔧",
+                font=("Courier New", 60),
+                text_color="#00ff00"
+            )
+            self.logo_label.pack(expand=True, fill="both")
 
         # Connection Section with modern styling
         self.connection_frame = ctk.CTkFrame(self.main_frame, corner_radius=10)
-        self.connection_frame.pack(fill="x", padx=20, pady=10)
+        self.connection_frame.pack(fill="x", padx=0, pady=0)
         
         # Section title
         self.connection_title = ctk.CTkLabel(
@@ -126,7 +182,7 @@ class BackupRestoreApp(ctk.CTk):
 
         # File selection section
         self.file_frame = ctk.CTkFrame(self.main_frame, corner_radius=10)
-        self.file_frame.pack(fill="x", padx=20, pady=10)
+        self.file_frame.pack(fill="x", padx=0, pady=0)
         
         file_title = ctk.CTkLabel(
             self.file_frame,
@@ -166,7 +222,7 @@ class BackupRestoreApp(ctk.CTk):
 
         # Action buttons section
         self.action_frame = ctk.CTkFrame(self.main_frame, corner_radius=10)
-        self.action_frame.pack(fill="x", padx=20, pady=10)
+        self.action_frame.pack(fill="x", padx=0, pady=0)
         
         action_title = ctk.CTkLabel(
             self.action_frame,
@@ -244,7 +300,7 @@ class BackupRestoreApp(ctk.CTk):
 
         # Output Log with modern styling
         self.output_frame = ctk.CTkFrame(self.main_frame, corner_radius=10)
-        self.output_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        self.output_frame.pack(fill="both", expand=True, padx=0, pady=0)
         
         output_title = ctk.CTkLabel(
             self.output_frame,
@@ -267,7 +323,7 @@ class BackupRestoreApp(ctk.CTk):
         self.output_text.grid(row=1, column=0, padx=15, pady=(0, 15), sticky="nsew")
         
         # Initialize with welcome message
-        self.log_message(">>> PwnSafe v1.0.0 - Backup & Restore Utility <<<")
+        self.log_message(">>> PwnSafe v1.2.0 - Backup & Restore Utility <<<")
         self.log_message(">>> System initialized. Ready for operations. <<<")
         self.log_message(">>> Target system connection required. <<<")
         
@@ -284,6 +340,37 @@ class BackupRestoreApp(ctk.CTk):
         
         # Start Pwnagotchi detection in background
         self.start_pwnagotchi_detection()
+
+    def bind_mousewheel(self):
+        """Bind mousewheel events to the canvas for scrolling."""
+        def _on_mousewheel(event):
+            self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        def _on_mousewheel_linux(event):
+            if event.num == 4:
+                self.canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                self.canvas.yview_scroll(1, "units")
+        
+        # Bind mousewheel for Windows/Mac
+        self.canvas.bind("<MouseWheel>", _on_mousewheel)
+        
+        # Bind mousewheel for Linux
+        self.canvas.bind("<Button-4>", _on_mousewheel_linux)
+        self.canvas.bind("<Button-5>", _on_mousewheel_linux)
+        
+        # Also bind to the main window
+        self.bind("<MouseWheel>", _on_mousewheel)
+        self.bind("<Button-4>", _on_mousewheel_linux)
+        self.bind("<Button-5>", _on_mousewheel_linux)
+        
+        # Bind window resize to update scroll region
+        self.bind('<Configure>', self._on_window_configure)
+
+    def _on_window_configure(self, event):
+        """Handle window resize events to update scroll region."""
+        if event.widget == self:
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def _setup_hacker_theme(self):
         """Setup the modern hacker theme colors and styling."""
@@ -509,6 +596,8 @@ class BackupRestoreApp(ctk.CTk):
         # Help menu
         help_menu = Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="Check for Updates", command=self.check_for_updates)
+        help_menu.add_separator()
         help_menu.add_command(label="About", command=self.show_about_dialog)
 
     def show_about_dialog(self):
@@ -529,7 +618,7 @@ class BackupRestoreApp(ctk.CTk):
         # Title
         title_label = ctk.CTkLabel(
             main_frame,
-            text="PwnSafe v1.0.0",
+            text="PwnSafe v1.2.0",
             font=("Courier New", 24, "bold"),
             text_color="#00ff00"
         )
@@ -1062,6 +1151,212 @@ and internet connection sharing capabilities."""
         else:
             self.log_message(">>> Network configuration test: FAILED <<<", "ERROR")
             self.log_message(">>> Check interface configuration and Pwnagotchi status <<<", "INFO")
+
+    def check_for_updates(self):
+        """Check for updates from GitHub repository."""
+        self.log_message(">>> Checking for updates... <<<", "SYSTEM")
+        
+        try:
+            # Get current version
+            current_version = self.get_current_version()
+            self.log_message(f">>> Current version: {current_version} <<<", "INFO")
+            
+            # Check for latest version on GitHub
+            latest_version, download_url = self.get_latest_version()
+            
+            if latest_version:
+                self.log_message(f">>> Latest version available: {latest_version} <<<", "INFO")
+                
+                if self.compare_versions(current_version, latest_version):
+                    self.log_message(">>> Update available! <<<", "SUCCESS")
+                    self.show_update_dialog(current_version, latest_version, download_url)
+                else:
+                    self.log_message(">>> You are running the latest version! <<<", "SUCCESS")
+            else:
+                self.log_message(">>> Unable to check for updates - check internet connection <<<", "WARNING")
+                
+        except Exception as e:
+            self.log_message(f">>> Update check failed: {e} <<<", "ERROR")
+
+    def get_current_version(self):
+        """Get the current application version."""
+        return __version__
+
+    def get_latest_version(self):
+        """Get the latest version from GitHub releases."""
+        try:
+            # GitHub API endpoint for releases
+            api_url = "https://api.github.com/repos/Zmk55/PwnSafe/releases/latest"
+            
+            self.log_message(">>> Fetching latest release information... <<<", "INFO")
+            response = requests.get(api_url, timeout=10)
+            
+            if response.status_code == 200:
+                release_data = response.json()
+                version = release_data.get('tag_name', '').lstrip('v')
+                download_url = None
+                
+                # Find the appropriate download URL based on platform
+                assets = release_data.get('assets', [])
+                current_platform = platform.system().lower()
+                
+                for asset in assets:
+                    asset_name = asset.get('name', '').lower()
+                    if current_platform == 'windows' and 'windows' in asset_name:
+                        download_url = asset.get('browser_download_url')
+                        break
+                    elif current_platform == 'linux' and ('linux' in asset_name or 'tar.gz' in asset_name):
+                        download_url = asset.get('browser_download_url')
+                        break
+                    elif current_platform == 'darwin' and ('macos' in asset_name or 'mac' in asset_name):
+                        download_url = asset.get('browser_download_url')
+                        break
+                
+                if not download_url and assets:
+                    # Fallback to first available asset
+                    download_url = assets[0].get('browser_download_url')
+                
+                return version, download_url
+            else:
+                self.log_message(f">>> GitHub API error: {response.status_code} <<<", "WARNING")
+                return None, None
+                
+        except requests.exceptions.RequestException as e:
+            self.log_message(f">>> Network error: {e} <<<", "WARNING")
+            return None, None
+        except Exception as e:
+            self.log_message(f">>> Error fetching version: {e} <<<", "ERROR")
+            return None, None
+
+    def compare_versions(self, current, latest):
+        """Compare version strings to determine if update is needed."""
+        try:
+            # Simple version comparison (assumes semantic versioning)
+            current_parts = [int(x) for x in current.split('.')]
+            latest_parts = [int(x) for x in latest.split('.')]
+            
+            # Pad with zeros if needed
+            max_length = max(len(current_parts), len(latest_parts))
+            current_parts.extend([0] * (max_length - len(current_parts)))
+            latest_parts.extend([0] * (max_length - len(latest_parts)))
+            
+            return current_parts < latest_parts
+            
+        except (ValueError, AttributeError):
+            # If version comparison fails, assume update is needed
+            return current != latest
+
+    def show_update_dialog(self, current_version, latest_version, download_url):
+        """Show update dialog with download option."""
+        update_window = ctk.CTkToplevel(self)
+        update_window.title("Update Available")
+        update_window.geometry("500x400")
+        update_window.transient(self)
+        update_window.grab_set()
+        
+        # Center the window
+        update_window.update_idletasks()
+        x = (update_window.winfo_screenwidth() // 2) - (500 // 2)
+        y = (update_window.winfo_screenheight() // 2) - (400 // 2)
+        update_window.geometry(f"500x400+{x}+{y}")
+        
+        # Main frame
+        main_frame = ctk.CTkFrame(update_window)
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        # Title
+        title_label = ctk.CTkLabel(
+            main_frame,
+            text="🔄 Update Available",
+            font=("Courier New", 20, "bold"),
+            text_color="#00ff00"
+        )
+        title_label.pack(pady=(20, 10))
+        
+        # Version info
+        version_frame = ctk.CTkFrame(main_frame)
+        version_frame.pack(fill="x", padx=20, pady=10)
+        
+        current_label = ctk.CTkLabel(
+            version_frame,
+            text=f"Current Version: {current_version}",
+            font=("Courier New", 14),
+            text_color="#ffff00"
+        )
+        current_label.pack(pady=5)
+        
+        latest_label = ctk.CTkLabel(
+            version_frame,
+            text=f"Latest Version: {latest_version}",
+            font=("Courier New", 14, "bold"),
+            text_color="#00ff00"
+        )
+        latest_label.pack(pady=5)
+        
+        # Description
+        desc_text = """A new version of PwnSafe is available with improvements and bug fixes.
+
+Click 'Download Update' to get the latest version, or 'Check GitHub' to view the release notes."""
+        
+        desc_label = ctk.CTkLabel(
+            main_frame,
+            text=desc_text,
+            font=("Courier New", 12),
+            text_color="#ffffff",
+            justify="left"
+        )
+        desc_label.pack(pady=20, padx=20)
+        
+        # Buttons
+        button_frame = ctk.CTkFrame(main_frame)
+        button_frame.pack(fill="x", padx=20, pady=20)
+        
+        def download_update():
+            if download_url:
+                webbrowser.open(download_url)
+                update_window.destroy()
+            else:
+                self.log_message(">>> No download URL available <<<", "ERROR")
+        
+        def open_github():
+            webbrowser.open("https://github.com/Zmk55/PwnSafe/releases")
+            update_window.destroy()
+        
+        def close_dialog():
+            update_window.destroy()
+        
+        download_btn = ctk.CTkButton(
+            button_frame,
+            text="Download Update",
+            command=download_update,
+            fg_color="#00ff00",
+            hover_color="#00cc00",
+            text_color="#000000",
+            font=("Courier New", 12, "bold")
+        )
+        download_btn.pack(side="left", padx=10, pady=10)
+        
+        github_btn = ctk.CTkButton(
+            button_frame,
+            text="Check GitHub",
+            command=open_github,
+            fg_color="#0066ff",
+            hover_color="#0052cc",
+            text_color="#ffffff",
+            font=("Courier New", 12)
+        )
+        github_btn.pack(side="left", padx=10, pady=10)
+        
+        close_btn = ctk.CTkButton(
+            button_frame,
+            text="Close",
+            command=close_dialog,
+            fg_color="#666666",
+            hover_color="#555555",
+            text_color="#ffffff",
+            font=("Courier New", 12)
+        )
+        close_btn.pack(side="right", padx=10, pady=10)
 
     def detect_pwnagotchi(self):
         """Detect Pwnagotchi device and auto-configure connection."""
