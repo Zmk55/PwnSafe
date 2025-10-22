@@ -8,7 +8,7 @@
 - **macOS**: Universal binary support
 - **Standalone**: No Python installation required on target systems
 
-### 🎨 Cyberpunk Hacker Theme
+### 🎨 Modern Hacker Theme
 - **Matrix Green Text**: Classic terminal aesthetic
 - **Dark Theme**: Black backgrounds with neon accents
 - **Courier New Font**: Monospace font for retro feel
@@ -18,14 +18,14 @@
   - 🟡 Yellow: Warnings
   - 🔴 Red: Errors
   - 🟠 Orange: System status
-- **Cyberpunk Terminology**: All caps labels and hacker-style messaging
+- **Modern Terminology**: All caps labels and professional messaging
 - **Terminal-Style Interface**: Bracketed timestamps and formatted output
 
 ### 🔧 Backup & Restore Operations
 - **SSH Connection**: Secure remote system access
 - **Automated Backup**: Compressed .tgz files with selective exclusions
 - **File Upload**: Secure SFTP transfer for restore operations
-- **Progress Logging**: Real-time status updates with cyberpunk styling
+- **Progress Logging**: Real-time status updates with modern styling
 - **Error Handling**: Comprehensive error reporting and recovery
 
 ### 🚀 Standalone Executable
@@ -64,7 +64,7 @@
 - **Intuitive Controls**: Easy-to-use buttons and inputs
 - **Real-time Feedback**: Live status updates and progress indicators
 
-### Cyberpunk Aesthetic
+### Modern Aesthetic
 - **Section Headers**: Bracketed titles with orange accents
 - **Input Fields**: Monospace font with placeholder text
 - **Action Buttons**: Color-coded operations (green for backup, red for restore)
@@ -189,6 +189,6 @@
 
 ## 🎉 Summary
 
-PwnSafe is a professional-grade backup and restore utility with a unique cyberpunk aesthetic. It combines powerful functionality with an engaging user interface, making it perfect for system administrators, developers, and security professionals who need reliable remote backup capabilities.
+PwnSafe is a professional-grade backup and restore utility with a unique modern aesthetic. It combines powerful functionality with an engaging user interface, making it perfect for system administrators, developers, and security professionals who need reliable remote backup capabilities.
 
-The standalone executable format makes it incredibly easy to distribute and use, while the comprehensive development environment ensures high code quality and maintainability. The cyberpunk theme adds a fun, distinctive character that sets it apart from typical backup utilities.
+The standalone executable format makes it incredibly easy to distribute and use, while the comprehensive development environment ensures high code quality and maintainability. The modern theme adds a professional, distinctive character that sets it apart from typical backup utilities.

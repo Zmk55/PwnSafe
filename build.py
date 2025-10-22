@@ -144,7 +144,7 @@ def create_distribution_package():
         return False
     
     # Create package directory
-    package_name = f"PwnSafe_v1.0.0_{current_platform}"
+    package_name = f"PwnSafe_v1.3.0_{current_platform}"
     package_dir = Path(package_name)
     package_dir.mkdir(exist_ok=True)
     
@@ -208,7 +208,7 @@ def main():
         create_distribution_package()
         print("\n🎉 Build process completed successfully!")
         print(f"\n📁 Executable location: dist/")
-        print(f"📦 Package location: PwnSafe_v1.0.0_{detect_platform()}/")
+        print(f"📦 Package location: PwnSafe_v1.3.0_{detect_platform()}/")
     else:
         print("\n❌ Build process failed!")
         sys.exit(1)

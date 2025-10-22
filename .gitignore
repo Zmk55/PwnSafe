@@ -230,3 +230,7 @@ PwnSafe.AppDir/
 *.deb
 *.rpm
 *.AppImage
+
+# Test files and images (keep local)
+test_files/
+images/

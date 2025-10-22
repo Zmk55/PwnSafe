@@ -102,16 +102,16 @@ PwnSafe_v1.0.0_linux/
 - **No Python Required**: Runs on systems without Python installed
 - **All Dependencies**: All required libraries bundled
 - **Cross-Platform**: Works on Windows, Linux, and macOS
-- **Cyberpunk Theme**: Dystopian hacker aesthetic
+- **Modern Theme**: Professional hacker aesthetic
 - **Easy Distribution**: Just copy the executable file
 
-### 🎨 Cyberpunk Theme Features
+### 🎨 Modern Theme Features
 - **Matrix Green Text**: Classic hacker terminal colors
 - **Courier New Font**: Monospace font for that retro feel
 - **Dark Theme**: Black backgrounds with neon accents
-- **Cyberpunk Styling**: Orange and cyan accent colors
+- **Modern Styling**: Orange and cyan accent colors
 - **Terminal-Style Logs**: Timestamped messages with brackets
-- **Hacker Aesthetic**: All caps labels and cyberpunk terminology
+- **Hacker Aesthetic**: All caps labels and professional terminology
 
 ## 🚀 Running the Executable
 
@@ -247,7 +247,7 @@ make build
 - Executables are built with `--onefile` for easy distribution
 - The `--windowed` flag hides the console window on Windows
 - All necessary dependencies are bundled automatically
-- The cyberpunk theme is applied by default
+- The modern theme is applied by default
 - Cross-platform compatibility is maintained
 
 ## 🆘 Support
