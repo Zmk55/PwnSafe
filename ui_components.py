@@ -27,28 +27,33 @@ class CollapsibleSection(ctk.CTkFrame):
         # Header frame with toggle button
         self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.header_frame.grid(row=0, column=0, sticky="ew", padx=8, pady=4)
+        self.header_frame.grid_columnconfigure(0, weight=0)  # chevron column
+        self.header_frame.grid_columnconfigure(1, weight=1)  # title column
         
-        # Toggle button (arrow)
+        # Toggle button (chevron) - ONLY clickable element
         self.toggle_button = ctk.CTkButton(
             self.header_frame,
-            text="▼" if is_expanded else "▶",
-            width=20,
+            text="▾" if is_expanded else "▸",
+            width=22,
             height=20,
-            font=ctk.CTkFont(size=10),
+            font=ctk.CTkFont(size=12),
             fg_color="transparent",
             hover_color="#333333",
             command=self.toggle
         )
-        self.toggle_button.pack(side="left", padx=(0, 8))
+        self.toggle_button.grid(row=0, column=0, sticky="w")
         
-        # Section title
+        # Section title - NOT clickable
         self.title_label = ctk.CTkLabel(
             self.header_frame,
             text=title,
             font=ctk.CTkFont(size=13, weight="bold"),
             text_color="#888888"
         )
-        self.title_label.pack(side="left")
+        self.title_label.grid(row=0, column=1, sticky="w", padx=(8, 0))
+        
+        # Remove any click bindings from title label
+        self.title_label.unbind("<Button-1>")
         
         # Content frame (initially hidden)
         self.content_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -62,10 +67,10 @@ class CollapsibleSection(ctk.CTkFrame):
         
         if self.is_expanded:
             self.content_frame.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
-            self.toggle_button.configure(text="▼")
+            self.toggle_button.configure(text="▾")
         else:
             self.content_frame.grid_remove()
-            self.toggle_button.configure(text="▶")
+            self.toggle_button.configure(text="▸")
     
     def add_widget(self, widget, **pack_options):
         """Add a widget to the content frame."""
@@ -96,14 +101,16 @@ class StatusBar(ctk.CTkFrame):
         )
         self.status_label.pack(side="left", padx=8, pady=2)
         
-        # Connection indicator (small colored dot)
-        self.indicator = ctk.CTkLabel(
-            self,
-            text="●",
-            font=ctk.CTkFont(size=12),
-            text_color="#ff4444"  # Red for disconnected
+        # Canvas-based indicator dot for precise color control
+        self.status_dot = ctk.CTkCanvas(
+            self, 
+            width=10, 
+            height=10, 
+            highlightthickness=0,
+            bg=self._apply_appearance_mode(self.cget("fg_color"))
         )
-        self.indicator.pack(side="right", padx=8, pady=2)
+        self.status_dot.pack(side="right", padx=8, pady=2)
+        self._dot_id = self.status_dot.create_oval(1, 1, 9, 9, fill="#6b7280", outline="")
     
     def update_status(self, text, level="info"):
         """Update the status text and indicator color."""
@@ -119,7 +126,12 @@ class StatusBar(ctk.CTkFrame):
         }
         
         color = colors.get(level, "#888888")
-        self.indicator.configure(text_color=color)
+        self.status_dot.itemconfig(self._dot_id, fill=color)
+    
+    def set_state(self, color: str, text: str):
+        """Update both dot color and status text."""
+        self.status_dot.itemconfig(self._dot_id, fill=color)
+        self.status_label.configure(text=text)
 
 
 class ToastNotification:

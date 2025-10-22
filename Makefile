@@ -1,7 +1,7 @@
 # PwnSafe Development Makefile
 # Common development tasks for the PwnSafe project
 
-.PHONY: help install install-dev test lint format clean build run docker-build docker-run docs security check-all
+.PHONY: help install install-dev test lint format clean build run docs security check-all
 
 # Default target
 help:
@@ -24,10 +24,6 @@ help:
 	@echo "  build-linux  Build Linux executable"
 	@echo "  build-universal Build for current platform with package"
 	@echo "  clean        Clean build artifacts and cache"
-	@echo ""
-	@echo "Docker:"
-	@echo "  docker-build Build Docker image"
-	@echo "  docker-run   Run PwnSafe in Docker container"
 	@echo ""
 	@echo "Documentation:"
 	@echo "  docs         Generate documentation"
@@ -83,13 +79,6 @@ clean:
 	rm -rf .mypy_cache/
 	find . -type d -name __pycache__ -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
-
-# Docker commands
-docker-build:
-	docker build -t pwnsafe:latest .
-
-docker-run:
-	docker run -it --rm -e DISPLAY=$$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix pwnsafe:latest
 
 # Documentation
 docs:

@@ -11,7 +11,6 @@ This guide provides comprehensive information for developing and contributing to
 - [Testing](#testing)
 - [Code Quality](#code-quality)
 - [Building and Packaging](#building-and-packaging)
-- [Docker Development](#docker-development)
 - [CI/CD](#cicd)
 - [Contributing](#contributing)
 
@@ -93,8 +92,6 @@ PwnSafe/
 │   ├── __init__.py
 │   └── test_pwnsafe.py
 ├── .gitignore                  # Git ignore rules
-├── Dockerfile                  # Docker configuration
-├── docker-compose.yml          # Docker Compose setup
 ├── Makefile                    # Development commands
 ├── pyproject.toml             # Project configuration
 ├── requirements.txt           # Production dependencies
@@ -127,10 +124,6 @@ make check-all        # Run all checks
 # Build & Deploy
 make build            # Build executable
 make clean            # Clean build artifacts
-
-# Docker
-make docker-build     # Build Docker image
-make docker-run       # Run in Docker
 
 # Documentation
 make docs             # Generate documentation
@@ -250,27 +243,6 @@ twine check dist/*
 twine upload dist/*
 ```
 
-## Docker Development
-
-### Using Docker
-
-```bash
-# Build Docker image
-docker build -t pwnsafe:latest .
-
-# Run in Docker
-docker run -it --rm -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix pwnsafe:latest
-
-# Using docker-compose
-docker-compose up pwnsafe-dev
-```
-
-### Docker Compose Services
-
-- **pwnsafe:** Production container
-- **pwnsafe-dev:** Development container with tools
-- **test-ssh:** Test SSH server for development
-
 ## CI/CD
 
 ### GitHub Actions
@@ -278,7 +250,7 @@ docker-compose up pwnsafe-dev
 The project uses GitHub Actions for continuous integration:
 
 - **Test:** Run tests on multiple Python versions
-- **Build:** Create executable and Docker images
+- **Build:** Create executable for Windows and Linux
 - **Release:** Publish to PyPI on release
 
 ### Workflow Triggers
@@ -332,7 +304,7 @@ The project uses GitHub Actions for continuous integration:
 ### Common Issues
 
 1. **Import errors:** Ensure virtual environment is activated
-2. **GUI not displaying:** Check X11 forwarding for Docker
+2. **GUI not displaying:** Check display settings and dependencies
 3. **Test failures:** Verify all dependencies are installed
 4. **Build errors:** Check Python version compatibility
 

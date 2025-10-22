@@ -15,6 +15,7 @@ from pathlib import Path
 import winreg
 import psutil
 import wmi
+from ui_refactor import ConnState
 import stat
 
 
@@ -287,9 +288,9 @@ class BackupRestoreApp(ctk.CTk):
         self.output_text.pack(fill="both", expand=True, padx=8, pady=8)
         
         # Initialize with welcome message
-        self.log_message(">>> PwnSafe v1.0.0 - Cyberpunk Backup & Restore Utility <<<")
-        self.log_message(">>> System initialized. Ready for operations. <<<")
-        self.log_message(">>> Automatic Pwnagotchi detection starting... <<<")
+        self.log_message("PwnSafe v1.0.0 - Cyberpunk Backup & Restore Utility", "INFO")
+        self.log_message("System initialized. Ready for operations.", "SUCCESS")
+        self.log_message("Automatic Pwnagotchi detection starting...", "INFO")
         
         # Initialize Pwnagotchi detection
         self.pwnagotchi_detected = False
@@ -400,24 +401,24 @@ class BackupRestoreApp(ctk.CTk):
                 ssh_key_path = self.get_ssh_key_path()
                 if os.path.exists(ssh_key_path):
                     try:
-                        self.log_message(">>> Attempting certificate authentication... <<<", "INFO")
+                        self.log_message("Attempting certificate authentication...", "INFO")
                         
                         # Load the private key
                         private_key = paramiko.RSAKey.from_private_key_file(str(ssh_key_path))
                         
                         # Connect using the certificate
                         ssh.connect(host, username=username, pkey=private_key, timeout=10)
-                        self.log_message(">>> Certificate authentication successful! <<<", "SUCCESS")
+                        self.log_message("Certificate authentication successful!", "SUCCESS")
                         return ssh
                         
                     except Exception as cert_error:
-                        self.log_message(f">>> Certificate authentication failed: {cert_error} <<<", "WARNING")
-                        self.log_message(">>> Falling back to password authentication... <<<", "INFO")
+                        self.log_message(f"Certificate authentication failed: {cert_error}", "WARNING")
+                        self.log_message("Falling back to password authentication...", "INFO")
                         # Continue to password authentication below
             
             # Password authentication (fallback or primary)
             ssh.connect(host, username=username, password=password, timeout=10)
-            self.log_message(">>> Password authentication successful! <<<", "SUCCESS")
+            self.log_message("Password authentication successful!", "SUCCESS")
             return ssh
             
         except Exception as e:
@@ -596,6 +597,57 @@ The backup will be saved as a compressed .tgz file."""
         self.update_status("Starting backup...")
         threading.Thread(target=self.backup, daemon=True).start()
 
+    def backup_to_path(self, dest_path):
+        """Backup Pwnagotchi to specified path."""
+        threading.Thread(target=lambda: self._backup_worker(dest_path), daemon=True).start()
+
+    def _backup_worker(self, save_path):
+        """Worker thread for backup operation."""
+        ssh = self.ssh_connect()
+        if not ssh:
+            self.update_status("Backup failed - connection error")
+            return  # Connection failed
+
+        self.log_message("Initiating backup sequence...", "SYSTEM")
+        self.update_status("Creating backup...")
+
+        # This command sends tar output to stdout, then we compress it with gzip
+        # so we can capture the entire thing locally, just like your old batch file.
+        command = (
+            "sudo tar --exclude='/etc/pwnagotchi/log/*.log' "
+            "--warning=none -cf - "
+            "/etc/pwnagotchi/ /root/.ssh /home/pi/handshakes "
+            "| gzip -9"
+        )
+
+        stdin, stdout, stderr = ssh.exec_command(command)
+
+        # Read the compressed data in chunks and write to local file
+        try:
+            with open(save_path, 'wb') as f:
+                while True:
+                    chunk = stdout.read(4096)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+
+            self.log_message(f"Backup completed successfully: {save_path}", "SUCCESS")
+            self.update_status("Backup completed successfully")
+            
+            # Restore previous connection state
+            if hasattr(self, '_prev_state'):
+                self.set_connection_state(self._prev_state, "Pwnagotchi Connected and Ready!")
+            else:
+                self.set_connection_state(ConnState.CONNECTED, "Pwnagotchi Connected and Ready!")
+
+        except Exception as e:
+            self.log_message(f"Backup failed: {str(e)}", "ERROR")
+            self.update_status("Backup failed")
+            self.set_connection_state(ConnState.ERROR, "Backup failed")
+
+        finally:
+            ssh.close()
+
     def backup(self):
         ssh = self.ssh_connect()
         if not ssh:
@@ -650,16 +702,79 @@ The backup will be saved as a compressed .tgz file."""
                         self.log_message(f"{line}", "WARNING")
 
                 self.log_message(f"Backup successfully saved to: {save_path}", "SUCCESS")
-                self.update_status("Backup completed successfully!")
+                # Restore previous connection state (usually CONNECTED)
+                if hasattr(self, 'ui') and self.ui:
+                    prev_state = getattr(self.ui, '_prev_state', ConnState.CONNECTED)
+                    self.set_connection_state(prev_state, "Pwnagotchi Connected and Ready!")
             else:
                 # Non-zero exit code => real error
                 self.log_message(f"tar failed with exit code {exit_code}", "ERROR")
-                self.update_status("Backup failed - check logs")
+                self.set_connection_state(ConnState.ERROR, "Backup failed - check logs")
                 if errors:
                     self.log_message(errors, "ERROR")
 
         except Exception as e:
             self.log_message(f"Failed to download backup stream: {e}", "ERROR")
+            self.set_connection_state(ConnState.ERROR, "Backup failed - check logs")
+        finally:
+            ssh.close()
+
+    def restore_from_path(self, src_path):
+        """Restore Pwnagotchi from specified path."""
+        threading.Thread(target=lambda: self._restore_worker(src_path), daemon=True).start()
+
+    def _restore_worker(self, restore_path):
+        """Worker thread for restore operation."""
+        ssh = self.ssh_connect()
+        if not ssh:
+            self.update_status("Restore failed - connection error")
+            return  # Connection failed
+
+        self.log_message("Initiating restore sequence...", "SYSTEM")
+        self.update_status("Restoring backup...")
+
+        try:
+            # Read the backup file and send it to the remote system
+            with open(restore_path, 'rb') as f:
+                data = f.read()
+
+            # Create a temporary file on the remote system
+            stdin, stdout, stderr = ssh.exec_command("mktemp")
+            temp_file = stdout.read().decode().strip()
+
+            # Upload the backup data
+            sftp = ssh.open_sftp()
+            with sftp.open(temp_file, 'wb') as remote_file:
+                remote_file.write(data)
+            sftp.close()
+
+            # Extract the backup
+            extract_command = f"sudo tar -xzf {temp_file} -C /"
+            stdin, stdout, stderr = ssh.exec_command(extract_command)
+            
+            # Wait for completion
+            exit_status = stdout.channel.recv_exit_status()
+            
+            if exit_status == 0:
+                self.log_message(f"Restore completed successfully from: {restore_path}", "SUCCESS")
+                self.update_status("Restore completed successfully")
+                
+                # Restore previous connection state
+                if hasattr(self, '_prev_state'):
+                    self.set_connection_state(self._prev_state, "Pwnagotchi Connected and Ready!")
+                else:
+                    self.set_connection_state(ConnState.CONNECTED, "Pwnagotchi Connected and Ready!")
+            else:
+                error_msg = stderr.read().decode()
+                self.log_message(f"Restore failed: {error_msg}", "ERROR")
+                self.update_status("Restore failed")
+                self.set_connection_state(ConnState.ERROR, "Restore failed")
+
+        except Exception as e:
+            self.log_message(f"Restore failed: {str(e)}", "ERROR")
+            self.update_status("Restore failed")
+            self.set_connection_state(ConnState.ERROR, "Restore failed")
+
         finally:
             ssh.close()
 
@@ -974,14 +1089,14 @@ and internet connection sharing capabilities."""
 
     def manual_pwnagotchi_detection(self):
         """Manually trigger Pwnagotchi detection with user feedback."""
-        self.log_message(">>> Manual Pwnagotchi detection initiated... <<<", "SYSTEM")
+        self.log_message("Manual Pwnagotchi detection initiated...", "SYSTEM")
         
         if self.is_windows:
-            self.log_message(">>> Scanning for RNDIS adapters on Windows... <<<", "INFO")
+            self.log_message("Scanning for RNDIS adapters on Windows...", "INFO")
             # Use Windows-specific detection
             threading.Thread(target=self.detect_pwnagotchi_windows, daemon=True).start()
         else:
-            self.log_message(">>> Scanning network interfaces... <<<", "INFO")
+            self.log_message("Scanning network interfaces...", "INFO")
             
             # Run detection in background but provide immediate feedback
             def detection_with_feedback():
@@ -991,16 +1106,16 @@ and internet connection sharing capabilities."""
                     
                     if pwnagotchi_interface:
                         self.pwnagotchi_interface = pwnagotchi_interface
-                        self.log_message(f">>> Pwnagotchi interface found: {pwnagotchi_interface} <<<", "SUCCESS")
+                        self.log_message(f"Pwnagotchi interface found: {pwnagotchi_interface}", "SUCCESS")
                         
                         # Test connection to Pwnagotchi
-                        self.log_message(">>> Testing SSH connection to Pwnagotchi... <<<", "INFO")
+                        self.log_message("Testing SSH connection to Pwnagotchi...", "INFO")
                         if self.test_pwnagotchi_connection():
                             was_detected = self.pwnagotchi_detected
                             self.pwnagotchi_detected = True
                             self.auto_configure_pwnagotchi()
-                            self.log_message(">>> Pwnagotchi detected and configured successfully! <<<", "SUCCESS")
-                            self.log_message(">>> Connection fields have been auto-filled <<<", "SUCCESS")
+                            self.log_message("Pwnagotchi detected and configured successfully!", "SUCCESS")
+                            self.log_message("Connection fields have been auto-filled", "SUCCESS")
                             
                             # Offer SSH certificate setup if this is a new detection
                             if not was_detected:
@@ -1010,15 +1125,15 @@ and internet connection sharing capabilities."""
                             if self.pwnagotchi_mac:
                                 self.start_reconnection_monitoring()
                         else:
-                            self.log_message(">>> Pwnagotchi interface found but SSH connection failed <<<", "WARNING")
-                            self.log_message(">>> Please check if Pwnagotchi is fully booted <<<", "WARNING")
+                            self.log_message("Pwnagotchi interface found but SSH connection failed", "WARNING")
+                            self.log_message("Please check if Pwnagotchi is fully booted", "WARNING")
                     else:
-                        self.log_message(">>> No Pwnagotchi interface detected <<<", "WARNING")
-                        self.log_message(">>> Make sure Pwnagotchi is connected to DATA port <<<", "INFO")
-                        self.log_message(">>> Check if network interface is configured with 10.0.0.1/24 <<<", "INFO")
+                        self.log_message("No Pwnagotchi interface detected", "WARNING")
+                        self.log_message("Make sure Pwnagotchi is connected to DATA port", "INFO")
+                        self.log_message("Check if network interface is configured with 10.0.0.1/24", "INFO")
                         
                 except Exception as e:
-                    self.log_message(f">>> Detection error: {e} <<<", "ERROR")
+                    self.log_message(f"Detection error: {e}", "ERROR")
             
             # Run in background thread
             threading.Thread(target=detection_with_feedback, daemon=True).start()
@@ -1553,11 +1668,8 @@ and internet connection sharing capabilities."""
     def update_pwnagotchi_status(self):
         """Update UI to show Pwnagotchi connection status."""
         if self.pwnagotchi_detected:
-            # Update the main status label instead of adding a new one
-            self.status_label.configure(
-                text="✅ Pwnagotchi Connected and Ready!",
-                text_color="#00ff00"
-            )
+            # Use the update_status method which handles UI availability
+            self.update_status("✅ Pwnagotchi Connected and Ready!")
 
     def setup_connection_sharing(self):
         """Setup internet connection sharing for Pwnagotchi."""
@@ -1637,7 +1749,7 @@ and internet connection sharing capabilities."""
             return False
             
         try:
-            self.log_message(">>> Scanning for RNDIS adapters on Windows... <<<", "SYSTEM")
+            self.log_message("Searching for connected Pwnagotchi device...", "INFO")
             
             # Use WMI to get network adapters
             c = wmi.WMI()
@@ -1650,26 +1762,25 @@ and internet connection sharing capabilities."""
                     ("RNDIS" in adapter.Description.upper() or 
                      "USB" in adapter.Description.upper() and "ETHERNET" in adapter.Description.upper())):
                     rndis_adapters.append(adapter)
-                    self.log_message(f">>> Potential Pwnagotchi adapter found: {adapter.NetConnectionID} ({adapter.Description}) <<<", "INFO")
+                    # Verbose only
+                    self.log_message(f"Potential adapter: {adapter.Description}", "INFO", verbose=True)
             
             if rndis_adapters:
                 # Use the first RNDIS adapter found
                 adapter = rndis_adapters[0]
-                self.log_message(f">>> Using RNDIS adapter: {adapter.NetConnectionID} <<<", "SUCCESS")
+                self.log_message(f"Found USB adapter: {adapter.NetConnectionID} ({adapter.Description})", "SUCCESS")
                 self.pwnagotchi_adapter_name = adapter.NetConnectionID
                 
                 # Configure the adapter automatically
                 if self.configure_pwnagotchi_windows():
                     return True
             else:
-                self.log_message(">>> No RNDIS adapter detected <<<", "WARNING")
-                self.log_message(">>> Make sure Pwnagotchi is connected to DATA port <<<", "INFO")
-                self.log_message(">>> Check if RNDIS driver is installed <<<", "INFO")
+                self.log_message("No RNDIS adapter detected", "ERROR")
+                self.log_message("Make sure Pwnagotchi is connected to DATA port", "INFO")
                 return False
             
         except Exception as e:
-            self.log_message(f">>> Windows detection error: {e} <<<", "ERROR")
-            self.log_message(">>> Make sure WMI service is running <<<", "INFO")
+            self.log_message(f"Detection error: {e}", "ERROR")
             return False
 
     def configure_pwnagotchi_windows(self):
@@ -1678,10 +1789,11 @@ and internet connection sharing capabilities."""
             return False
             
         try:
-            self.log_message(">>> Configuring Windows network settings for Pwnagotchi... <<<", "SYSTEM")
+            # User-facing message with full config details
+            self.log_message("Configuring network: IP 10.0.0.1/24, DNS 8.8.8.8, 1.1.1.1", "INFO")
             
-            # Configure IP settings using netsh
-            self.log_message(">>> Setting IP address: 10.0.0.1/24 <<<", "INFO")
+            # Verbose: netsh commands
+            self.log_message(f"Setting IP via netsh on {self.pwnagotchi_adapter_name}", "INFO", verbose=True)
             
             # Set static IP configuration
             result = subprocess.run([
@@ -1691,12 +1803,12 @@ and internet connection sharing capabilities."""
             ], capture_output=True, text=True, shell=True)
             
             if result.returncode == 0:
-                self.log_message(">>> IP address configured successfully <<<", "SUCCESS")
+                self.log_message("IP address configured successfully", "SUCCESS", verbose=True)
             else:
-                self.log_message(f">>> IP configuration warning: {result.stderr} <<<", "WARNING")
+                self.log_message(f"IP configuration warning: {result.stderr}", "WARNING", verbose=True)
             
             # Set DNS servers
-            self.log_message(">>> Setting DNS servers: 8.8.8.8, 1.1.1.1 <<<", "INFO")
+            self.log_message("Setting DNS servers: 8.8.8.8, 1.1.1.1", "INFO", verbose=True)
             subprocess.run([
                 "netsh", "interface", "ip", "set", "dns", 
                 f"name=\"{self.pwnagotchi_adapter_name}\"", 
@@ -1709,27 +1821,32 @@ and internet connection sharing capabilities."""
                 "1.1.1.1", "index=2"
             ], capture_output=True, text=True, shell=True)
             
-            self.log_message(">>> DNS servers configured <<<", "SUCCESS")
+            self.log_message("DNS servers configured", "SUCCESS", verbose=True)
+            self.log_message("Network configuration complete.", "SUCCESS")
+            self.log_message("Verifying Pwnagotchi connectivity...", "INFO")
             
             # Test connectivity
             if self.test_pwnagotchi_connection():
-                self.log_message(">>> Pwnagotchi connection test successful! <<<", "SUCCESS")
                 self.pwnagotchi_detected = True
                 self.auto_configure_pwnagotchi()
+                self.set_connection_state(ConnState.CONNECTED, "Pwnagotchi Connected and Ready!")
+                self.log_message("Pwnagotchi connected and ready!", "SUCCESS")
                 return True
             else:
-                self.log_message(">>> Pwnagotchi not responding yet - may still be booting <<<", "WARNING")
+                self.log_message("Unable to reach Pwnagotchi device", "ERROR")
                 return False
                 
         except AttributeError as e:
             self.log_message(f">>> Windows configuration error: {e} <<<", "ERROR")
             self.log_message(">>> This usually means the UI widgets are not accessible <<<", "INFO")
             self.log_message(">>> Try manually entering connection details <<<", "INFO")
+            self.set_connection_state(ConnState.ERROR, f"Detection error: {str(e)[:50]}")
             return False
         except Exception as e:
             self.log_message(f">>> Windows configuration error: {e} <<<", "ERROR")
             import traceback
             self.log_message(f">>> Error details: {traceback.format_exc()} <<<", "ERROR")
+            self.set_connection_state(ConnState.ERROR, f"Detection error: {str(e)[:50]}")
             return False
 
     def setup_internet_sharing_windows(self):
@@ -3144,7 +3261,7 @@ This should be the adapter that provides your internet connection (Wi-Fi, Ethern
                     self.pwnagotchi_detected = True
                     self.auto_configure_pwnagotchi()
                     self.log_message(">>> Pwnagotchi detected and configured! <<<", "SUCCESS")
-                    self.update_status("Pwnagotchi connected and ready!")
+                    self.set_connection_state(ConnState.CONNECTED, "Pwnagotchi Connected and Ready!")
                     return
             
             # If not found, show guidance
@@ -3159,7 +3276,7 @@ This should be the adapter that provides your internet connection (Wi-Fi, Ethern
             
         except Exception as e:
             self.log_message(f">>> Automated detection error: {e} <<<", "ERROR")
-            self.update_status("Detection failed - check logs")
+            self.set_connection_state(ConnState.ERROR, "Detection failed - check logs")
 
     def show_connection_guidance(self):
         """Show guidance for connecting Pwnagotchi."""
@@ -3173,24 +3290,65 @@ This should be the adapter that provides your internet connection (Wi-Fi, Ethern
             self.log_message(">>> 2. Configure network interface with 10.0.0.1/24 <<<", "INFO")
             self.log_message(">>> 3. PwnSafe will automatically detect and configure <<<", "INFO")
 
-    def update_status(self, status_text):
-        """Update the status label."""
+    def set_connection_state(self, state, msg=None):
+        """Wrapper to call UI's set_connection_state if UI exists."""
+        if hasattr(self, 'ui') and self.ui:
+            self.ui.set_connection_state(state, msg)
+    
+    def update_status(self, status_text, state=None):
+        """Update status - now routes through set_connection_state."""
+        # Map legacy calls to new state system
+        if state is None:
+            # Infer state from text
+            if "success" in status_text.lower() or "ready" in status_text.lower():
+                state = ConnState.CONNECTED
+            elif "error" in status_text.lower() or "failed" in status_text.lower():
+                state = ConnState.ERROR
+            elif "waiting" in status_text.lower() or "detecting" in status_text.lower():
+                state = ConnState.CONNECTING
+            else:
+                state = ConnState.IDLE
+        
+        self.set_connection_state(state, status_text)
+        
         # For backward compatibility with old UI
         if hasattr(self, 'status_label'):
             self.status_label.configure(text=status_text)
             if hasattr(self, 'update_idletasks'):
                 self.update_idletasks()
     
-    def log_message(self, message, level="INFO"):
+    def log_message(self, message, level="INFO", verbose=False):
         """Log a message - can be overridden by UI."""
-        # Default implementation for when no UI is present
-        import datetime
-        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-        print(f"[{timestamp}] [{level}] {message}")
+        # Check if UI has verbose-aware logging
+        if hasattr(self, 'ui') and hasattr(self.ui, 'log_service'):
+            self.ui.log_service.log(message, level, verbose)
+        else:
+            # Fallback for no-UI mode
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+            print(f"[{timestamp}] [{level}] {message}")
     
     def show_toast(self, message, toast_type="info"):
         """Show a toast notification - can be overridden by UI."""
         print(f"[TOAST {toast_type.upper()}] {message}")
+
+
+def _detect_and_restart_monitor(app, ui, platform_type):
+    """Run detection and restart monitor."""
+    try:
+        if platform_type == "windows":
+            app.detect_pwnagotchi_windows()
+        else:
+            app.detect_pwnagotchi()
+    finally:
+        # Restart monitor after detection completes (thread-safe)
+        def _restart_monitor():
+            if hasattr(ui, 'live_monitor_var') and hasattr(ui, 'monitor'):
+                if ui.live_monitor_var.get() and ui.monitor:
+                    ui.monitor.start()
+        
+        # Schedule on main thread
+        ui.after(0, _restart_monitor)
 
 
 if __name__ == "__main__":
@@ -3219,13 +3377,19 @@ if __name__ == "__main__":
         if ui.auto_detect_var.get():
             app.log_message("Scanning for connected Pwnagotchi devices...", "SYSTEM")
             
+            # Temporarily stop monitor during auto-detect
+            if ui.monitor:
+                ui.monitor.stop()
+            
+            ui.set_connection_state(ConnState.CONNECTING, "Detecting Pwnagotchi…")
+            
             # Use platform-specific detection
             if platform_type == "windows":
                 # Windows: Use WMI-based detection for RNDIS adapters
-                threading.Thread(target=app.detect_pwnagotchi_windows, daemon=True).start()
+                threading.Thread(target=lambda: _detect_and_restart_monitor(app, ui, "windows"), daemon=True).start()
             else:
                 # Linux/Mac: Use network interface detection
-                threading.Thread(target=app.detect_pwnagotchi, daemon=True).start()
+                threading.Thread(target=lambda: _detect_and_restart_monitor(app, ui, "linux"), daemon=True).start()
         else:
             app.log_message("Auto-detection disabled in Advanced Settings", "INFO")
         

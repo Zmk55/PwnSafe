@@ -9,8 +9,17 @@ import os
 import platform
 import queue
 import datetime
+from enum import Enum, auto
 from ui_components import CollapsibleSection, StatusBar, ToastNotification, CompactLogViewer
 from profile_manager import ProfileManager
+
+
+class ConnState(Enum):
+    UNKNOWN = auto()      # grey - not initialized
+    IDLE = auto()         # yellow - initial/neutral state  
+    CONNECTING = auto()   # yellow - connection attempt in progress
+    CONNECTED = auto()    # green - successfully connected/ready
+    ERROR = auto()        # red - any error state
 
 
 class LogService:
@@ -21,6 +30,7 @@ class LogService:
         self._append = ui_append_callable  # Function that appends to text widget
         self._poll_ms = poll_ms
         self._running = False
+        self.verbose_mode = False  # Add verbose flag
     
     def start(self, root):
         """Start polling the queue on the main Tk thread."""
@@ -44,8 +54,22 @@ class LogService:
         """Stop polling the queue."""
         self._running = False
     
-    def log(self, message, level="INFO"):
-        """Thread-safe log method - can be called from any thread."""
+    def set_verbose(self, enabled):
+        """Enable/disable verbose logging."""
+        self.verbose_mode = enabled
+    
+    def log(self, message, level="INFO", verbose=False):
+        """Thread-safe log method - can be called from any thread.
+        
+        Args:
+            message: Log message text
+            level: INFO/WARNING/ERROR/SUCCESS/SYSTEM
+            verbose: If True, only log when verbose_mode is enabled
+        """
+        # Skip verbose messages if verbose mode is off
+        if verbose and not self.verbose_mode:
+            return
+        
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         self._queue.put((message, level, timestamp))
 
@@ -74,7 +98,18 @@ class PwnSafeCompactUI(ctk.CTk):
         
         # UI state
         self.current_profile = None
-        self.restore_button_enabled = False
+        
+        # Connection state tracking
+        self._conn_state = ConnState.UNKNOWN
+        
+        # Monitor state variables
+        self.live_monitor_var = ctk.BooleanVar(value=True)
+        self.live_interval_var = ctk.IntVar(value=2)
+        self.monitor = None
+        
+        # Last used directory for backup/restore
+        from pathlib import Path
+        self._last_backup_dir = Path.home()
         
         # Initialize StringVars for all input fields
         self.host_var = ctk.StringVar(value="10.0.0.2")
@@ -142,10 +177,9 @@ class PwnSafeCompactUI(ctk.CTk):
         self.main_frame.grid_rowconfigure(0, weight=0)  # header
         self.main_frame.grid_rowconfigure(1, weight=0)  # profile
         self.main_frame.grid_rowconfigure(2, weight=0)  # connection
-        self.main_frame.grid_rowconfigure(3, weight=0)  # backup file
-        self.main_frame.grid_rowconfigure(4, weight=0)  # primary buttons
-        self.main_frame.grid_rowconfigure(5, weight=0)  # advanced settings
-        self.main_frame.grid_rowconfigure(6, weight=1, minsize=100)  # SYSTEM LOG expands
+        self.main_frame.grid_rowconfigure(3, weight=0)  # primary buttons
+        self.main_frame.grid_rowconfigure(4, weight=0)  # advanced settings
+        self.main_frame.grid_rowconfigure(5, weight=1, minsize=100)  # SYSTEM LOG expands
         
         # 1. Header Section (60px fixed)
         self._create_header()
@@ -156,13 +190,7 @@ class PwnSafeCompactUI(ctk.CTk):
         # 3. Connection Section (80px fixed when collapsed)
         self._create_connection_section()
         
-        # 4. Backup File Section (50px fixed)
-        self._create_backup_section()
-        
-        # 5. Primary Actions (80px fixed)
-        self._create_primary_actions()
-        
-        # 6. Advanced Settings (CollapsibleSection)
+        # 4. Advanced Settings (CollapsibleSection)
         self._create_advanced_settings()
         
         # 7. System Log (CollapsibleSection)
@@ -175,9 +203,28 @@ class PwnSafeCompactUI(ctk.CTk):
         self.log_service = LogService(self._append_log_line)
         self.log_service.start(self)
         
+        # Add startup log messages
+        self.log_service.log("Starting PwnSafe...", "INFO")
+        
+        # Initialize connection state
+        self.set_connection_state(ConnState.IDLE, "Not connected")
+        
+        # Initialize connection monitor
+        from monitor import ConnectionMonitor
+        self.monitor = ConnectionMonitor(
+            ui=self,
+            interval_sec=self.live_interval_var.get(),
+            host_ip="10.0.0.2",
+            local_ip="10.0.0.1"
+        )
+
+        # Start monitor if enabled
+        if self.live_monitor_var.get():
+            self.monitor.start()
+        
         # Log startup message
         self.log_service.log("PwnSafe Compact UI initialized", "SYSTEM")
-        self.log_service.log("Ready for operations", "INFO")
+        self.log_service.log("Ready for operations.", "SUCCESS")
     
     def _create_header(self):
         """Create header section with title and status bar."""
@@ -259,6 +306,7 @@ class PwnSafeCompactUI(ctk.CTk):
         connection_grid.pack(fill="x", padx=self.PADDING_SECTION, pady=(0, self.PADDING_SECTION))
         connection_grid.grid_columnconfigure(1, weight=1)
         connection_grid.grid_columnconfigure(3, weight=1)
+        connection_grid.grid_columnconfigure(4, weight=0, minsize=140)
         
         # Row 1: Host and User
         host_label = ctk.CTkLabel(
@@ -338,94 +386,39 @@ class PwnSafeCompactUI(ctk.CTk):
         
         # SSH key path entry (hidden initially)
         self.ssh_key_path = ""
-    
-    def _create_backup_section(self):
-        """Create backup file selection section."""
-        self.backup_frame = ctk.CTkFrame(self.main_frame, corner_radius=8)
-        self.backup_frame.grid(row=3, column=0, sticky="nsew", pady=(0, self.UNIT))
         
-        # Section header
-        backup_title = ctk.CTkLabel(
-            self.backup_frame,
-            text="BACKUP FILE",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=self.colors['muted']
-        )
-        backup_title.pack(pady=(self.PADDING_SECTION, self.UNIT))
-        
-        # File selection
-        file_grid = ctk.CTkFrame(self.backup_frame, fg_color="transparent")
-        file_grid.pack(fill="x", padx=self.PADDING_SECTION, pady=(0, self.PADDING_SECTION))
-        file_grid.grid_columnconfigure(1, weight=1)
-        
-        file_label = ctk.CTkLabel(
-            file_grid,
-            text="File:",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=self.colors['text']
-        )
-        file_label.grid(row=0, column=0, padx=(0, self.UNIT), pady=self.UNIT, sticky="w")
-        
-        self.file_entry = ctk.CTkEntry(
-            file_grid,
-            placeholder_text="Select .tgz backup file...",
-            font=ctk.CTkFont(size=11),
-            height=self.ENTRY_HEIGHT
-        )
-        self.file_entry.grid(row=0, column=1, padx=(0, self.UNIT), pady=self.UNIT, sticky="ew")
-        self.file_entry.bind("<KeyRelease>", self._on_file_entry_changed)
-        
-        self.browse_file_button = ctk.CTkButton(
-            file_grid,
-            text="Browse",
-            width=60,
-            height=self.ENTRY_HEIGHT,
-            font=ctk.CTkFont(size=11),
-            command=self._browse_backup_file
-        )
-        self.browse_file_button.grid(row=0, column=2, padx=0, pady=self.UNIT)
-    
-    def _create_primary_actions(self):
-        """Create primary action buttons."""
-        self.actions_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        self.actions_frame.grid(row=4, column=0, sticky="ew", pady=(self.PADDING_LARGE, self.UNIT))
-        self.actions_frame.grid_columnconfigure(0, weight=1)
-        self.actions_frame.grid_columnconfigure(1, weight=1)
-        
-        # Button container
-        button_container = ctk.CTkFrame(self.actions_frame, fg_color="transparent")
-        button_container.grid(row=0, column=0, columnspan=2)
-        button_container.grid_columnconfigure(0, weight=1)
-        button_container.grid_columnconfigure(1, weight=1)
-        
-        # Backup button
+        # Action buttons (Backup/Restore)
+        # Backup button (green)
         self.backup_button = ctk.CTkButton(
-            button_container,
-            text="Backup Pwnagotchi",
-            width=200,
-            height=self.BUTTON_HEIGHT,
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=self.colors['primary'],
-            hover_color="#00cc00",
+            connection_grid,
+            text="Backup\nPwnagotchi",
+            width=130,
+            height=50,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#22c55e",  # Green
+            hover_color="#16a34a",
             text_color="#000000",
-            command=self._start_backup
-        )
-        self.backup_button.grid(row=0, column=0, padx=(0, self.PADDING_SECTION), sticky="ew")
-        
-        # Restore button
-        self.restore_button = ctk.CTkButton(
-            button_container,
-            text="Restore Pwnagotchi",
-            width=200,
-            height=self.BUTTON_HEIGHT,
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=self.colors['danger'],
-            hover_color="#aa0033",
-            text_color="#ffffff",
-            command=self._start_restore,
+            command=self._on_backup_click,
             state="disabled"
         )
-        self.restore_button.grid(row=0, column=1, sticky="ew")
+        self.backup_button.grid(row=0, column=4, rowspan=1, padx=(16, 0), pady=(self.UNIT, 4), sticky="new")
+        
+        # Restore button (red)
+        self.restore_button = ctk.CTkButton(
+            connection_grid,
+            text="Restore\nPwnagotchi",
+            width=130,
+            height=50,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#ef4444",  # Red
+            hover_color="#dc2626",
+            text_color="#ffffff",
+            command=self._on_restore_click,
+            state="disabled"
+        )
+        self.restore_button.grid(row=1, column=4, rowspan=1, padx=(16, 0), pady=(4, self.UNIT), sticky="new")
+    
+    
     
     def _create_advanced_settings(self):
         """Create advanced settings collapsible section."""
@@ -434,7 +427,7 @@ class PwnSafeCompactUI(ctk.CTk):
             "ADVANCED SETTINGS",
             is_expanded=False
         )
-        self.advanced_section.grid(row=5, column=0, sticky="nsew", pady=(0, self.UNIT))
+        self.advanced_section.grid(row=4, column=0, sticky="nsew", pady=(0, self.UNIT))
         
         # Auto-detect toggle
         self.auto_detect_var = ctk.BooleanVar(value=True)
@@ -495,88 +488,109 @@ class PwnSafeCompactUI(ctk.CTk):
             width=120
         )
         self.dns_secondary_entry.pack(side="left")
+        
+        # Live monitoring settings
+        monitor_frame = ctk.CTkFrame(self.advanced_section.content_frame, fg_color="transparent")
+        self.advanced_section.add_widget(monitor_frame, pady=self.UNIT)
+
+        self.live_monitor_checkbox = ctk.CTkCheckBox(
+            monitor_frame,
+            text="Live monitoring",
+            variable=self.live_monitor_var,
+            command=self._on_live_monitor_changed
+        )
+        self.live_monitor_checkbox.pack(side="left", padx=(0, self.UNIT))
+        
+        # Verbose logging checkbox
+        self.verbose_logging_var = ctk.BooleanVar(value=False)
+        self.verbose_logging_checkbox = ctk.CTkCheckBox(
+            monitor_frame,
+            text="Verbose logging (show diagnostic details)",
+            variable=self.verbose_logging_var,
+            command=self._on_verbose_logging_changed
+        )
+        self.verbose_logging_checkbox.pack(side="left", padx=(0, self.UNIT))
+
+        interval_label = ctk.CTkLabel(
+            monitor_frame,
+            text="Interval (s):",
+            font=ctk.CTkFont(size=11),
+            text_color=self.colors['text']
+        )
+        interval_label.pack(side="left", padx=(self.UNIT, self.UNIT//2))
+
+        self.interval_spinbox = ctk.CTkEntry(
+            monitor_frame,
+            textvariable=self.live_interval_var,
+            font=ctk.CTkFont(size=11),
+            height=self.ENTRY_HEIGHT,
+            width=50
+        )
+        self.interval_spinbox.pack(side="left")
+        self.interval_spinbox.bind("<FocusOut>", self._on_interval_changed)
     
     def _create_system_log(self):
-        """Create system log expandable section with proper grid weights."""
-        # Main log frame with grid weights
-        self.log_frame = ctk.CTkFrame(self.main_frame, corner_radius=8)
-        self.log_frame.grid(row=6, column=0, sticky="nsew", pady=(0, self.UNIT))
-        self.log_frame.grid_columnconfigure(0, weight=1)
-        self.log_frame.grid_rowconfigure(1, weight=1)  # Content row expands
-        
-        # Header with toggle and buttons
-        self.log_header = ctk.CTkFrame(self.log_frame, fg_color="transparent")
-        self.log_header.grid(row=0, column=0, sticky="ew", padx=8, pady=4)
-        self.log_header.grid_columnconfigure(1, weight=1)
-        
-        # Toggle button
-        self.log_toggle = ctk.CTkButton(
-            self.log_header,
-            text="▼ SYSTEM LOG",
-            width=120,
-            height=24,
-            font=ctk.CTkFont(size=11, weight="bold"),
-            fg_color="transparent",
-            hover_color="#333333",
-            command=self._toggle_log
+        """Create system log section using CollapsibleSection."""
+        # Create collapsible section (starts expanded)
+        self.log_section = CollapsibleSection(
+            self.main_frame,
+            "SYSTEM LOG",
+            is_expanded=True
         )
-        self.log_toggle.grid(row=0, column=0, sticky="w")
+        self.log_section.grid(row=5, column=0, sticky="nsew", pady=(0, self.UNIT))
         
-        # Button container
-        self.log_buttons = ctk.CTkFrame(self.log_header, fg_color="transparent")
-        self.log_buttons.grid(row=0, column=2, sticky="e")
+        # Configure content frame for proper stretching
+        self.log_section.content_frame.grid_rowconfigure(0, weight=0)  # controls row
+        self.log_section.content_frame.grid_rowconfigure(1, weight=1)  # log text row
+        self.log_section.content_frame.grid_columnconfigure(0, weight=1)
+        
+        # Control buttons (top-right)
+        controls_frame = ctk.CTkFrame(self.log_section.content_frame, fg_color="transparent")
+        controls_frame.grid(row=0, column=0, sticky="e", pady=(0, 6))
         
         self.log_clear_btn = ctk.CTkButton(
-            self.log_buttons,
+            controls_frame,
             text="Clear",
-            width=60,
+            width=70,
             height=24,
             font=ctk.CTkFont(size=10),
             command=self._clear_log
         )
-        self.log_clear_btn.pack(side="left", padx=(0, 4))
+        self.log_clear_btn.pack(side="left", padx=(0, 6))
         
         self.log_copy_btn = ctk.CTkButton(
-            self.log_buttons,
+            controls_frame,
             text="Copy All",
-            width=70,
+            width=90,
             height=24,
             font=ctk.CTkFont(size=10),
             command=self._copy_log
         )
         self.log_copy_btn.pack(side="left")
         
-        # Content frame (collapsible)
-        self.log_content = ctk.CTkFrame(self.log_frame, fg_color="#1a1a1a")
-        self.log_content.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
-        self.log_content.grid_columnconfigure(0, weight=1)
-        self.log_content.grid_rowconfigure(0, weight=1)
-        
-        # Text widget (no fixed height, properly configured)
+        # Text widget for logs
         from tkinter import Text
         self.log_text = Text(
-            self.log_content,
+            self.log_section.content_frame,
             font=("Consolas", 10),
             bg="#1a1a1a",
-            fg="#E6E6E6",  # Light gray for visibility
+            fg="#E6E6E6",
             insertbackground="#ffffff",
             selectbackground="#333333",
             selectforeground="#ffffff",
             relief="flat",
             borderwidth=0,
             wrap="word",
-            state="normal"  # Keep normal so we can insert
+            state="normal"
         )
-        self.log_text.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        self.log_text.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
         
-        # Configure tags for colored output
+        # Configure color tags
         self.log_text.tag_configure("success", foreground="#00ff00")
         self.log_text.tag_configure("warning", foreground="#ffff00")
         self.log_text.tag_configure("error", foreground="#ff0000")
         self.log_text.tag_configure("system", foreground="#ff6600")
         self.log_text.tag_configure("info", foreground="#00ff00")
-        
-        self.log_expanded = True
     
     def _append_log_line(self, msg_data):
         """Append a log line to the text widget (called from main thread only)."""
@@ -616,15 +630,6 @@ class PwnSafeCompactUI(ctk.CTk):
         # Keep in normal state for future inserts
         # self.log_text.configure(state="disabled")  # Don't disable
     
-    def _toggle_log(self):
-        """Toggle log panel expansion."""
-        self.log_expanded = not self.log_expanded
-        if self.log_expanded:
-            self.log_content.grid()
-            self.log_toggle.configure(text="▼ SYSTEM LOG")
-        else:
-            self.log_content.grid_remove()
-            self.log_toggle.configure(text="▶ SYSTEM LOG")
 
     def _clear_log(self):
         """Clear log content."""
@@ -678,10 +683,18 @@ class PwnSafeCompactUI(ctk.CTk):
         
         # Advanced settings
         self.auto_detect_var.set(profile.get("auto_detect", True))
+        self.live_monitor_var.set(profile.get("live_monitor", True))
+        self.live_interval_var.set(profile.get("monitor_interval", 2))
         self.dns_primary_entry.delete(0, "end")
         self.dns_primary_entry.insert(0, profile.get("dns_primary", ""))
         self.dns_secondary_entry.delete(0, "end")
         self.dns_secondary_entry.insert(0, profile.get("dns_secondary", ""))
+        
+        # Load last backup directory
+        last_dir = profile.get("last_backup_dir", "")
+        if last_dir:
+            from pathlib import Path
+            self._last_backup_dir = Path(last_dir)
         
         self.current_profile = profile_name
     
@@ -713,29 +726,6 @@ class PwnSafeCompactUI(ctk.CTk):
             self.ssh_key_path = filename
             self.toast.show_toast(f"SSH key selected: {os.path.basename(filename)}", "success")
     
-    def _browse_backup_file(self):
-        """Browse for backup file."""
-        filename = filedialog.askopenfilename(
-            title="Select Backup File",
-            filetypes=[("Backup Files", "*.tgz"), ("All Files", "*.*")]
-        )
-        if filename:
-            self.file_entry.delete(0, "end")
-            self.file_entry.insert(0, filename)
-            self._on_file_entry_changed()
-            
-            # Save directory for next time
-            self.profile_manager.set_last_backup_dir(os.path.dirname(filename))
-    
-    def _on_file_entry_changed(self, event=None):
-        """Handle file entry change."""
-        file_path = self.file_entry.get()
-        if file_path and os.path.exists(file_path):
-            self.restore_button.configure(state="normal")
-            self.restore_button_enabled = True
-        else:
-            self.restore_button.configure(state="disabled")
-            self.restore_button_enabled = False
     
     def _on_auto_detect_changed(self):
         """Handle auto-detect toggle change."""
@@ -770,33 +760,6 @@ class PwnSafeCompactUI(ctk.CTk):
         
         return True
     
-    def _start_backup(self):
-        """Start backup operation."""
-        if not self._validate_inputs():
-            return
-        
-        # Update status
-        self.status_bar.update_status("Starting backup...", "info")
-        self.log_viewer.log_message("Starting backup operation", "SYSTEM")
-        
-        # Call the main app's backup method
-        self.app.start_backup()
-    
-    def _start_restore(self):
-        """Start restore operation."""
-        if not self._validate_inputs():
-            return
-        
-        if not self.restore_button_enabled:
-            self.toast.show_toast("Please select a backup file first", "error")
-            return
-        
-        # Update status
-        self.status_bar.update_status("Starting restore...", "info")
-        self.log_viewer.log_message("Starting restore operation", "SYSTEM")
-        
-        # Call the main app's restore method
-        self.app.start_restore()
     
     def _save_current_profile(self):
         """Save current settings as a new profile."""
@@ -817,13 +780,20 @@ class PwnSafeCompactUI(ctk.CTk):
             "dns_primary": self.dns_primary_entry.get(),
             "dns_secondary": self.dns_secondary_entry.get(),
             "auto_detect": self.auto_detect_var.get(),
-            "network_adapter": self.network_adapter_dropdown.get()
+            "live_monitor": self.live_monitor_var.get(),
+            "monitor_interval": self.live_interval_var.get(),
+            "network_adapter": self.network_adapter_dropdown.get(),
+            "last_backup_dir": str(self._last_backup_dir)
         }
         
         self.profile_manager.save_profile(profile_name, profile_data)
     
     def _on_closing(self):
         """Handle window closing."""
+        # Stop monitor
+        if hasattr(self, 'monitor') and self.monitor:
+            self.monitor.stop()
+        
         # Stop log service
         if hasattr(self, 'log_service'):
             self.log_service.stop()
@@ -840,9 +810,9 @@ class PwnSafeCompactUI(ctk.CTk):
         self.destroy()
     
     # Public methods for the main app to use
-    def log_message(self, message, level="INFO"):
+    def log_message(self, message, level="INFO", verbose=False):
         """Log a message to the system log (thread-safe)."""
-        self.log_service.log(message, level)
+        self.log_service.log(message, level, verbose)
     
     def update_status(self, text, level="info"):
         """Update the status bar."""
@@ -888,3 +858,174 @@ class PwnSafeCompactUI(ctk.CTk):
     def ui_set_password(self, value: str):
         """Set password value (thread-safe, can be called from worker threads)."""
         self.after(0, lambda: self.set_password(value))
+    
+    def set_connection_state(self, state: ConnState, msg: str = None):
+        """
+        Central API for updating connection state.
+        Thread-safe: marshals updates to main Tk thread.
+        """
+        color_map = {
+            ConnState.UNKNOWN:    "#6b7280",  # grey
+            ConnState.IDLE:       "#eab308",  # yellow
+            ConnState.CONNECTING: "#eab308",  # yellow
+            ConnState.CONNECTED:  "#22c55e",  # green
+            ConnState.ERROR:      "#ef4444",  # red
+        }
+        
+        text_map = {
+            ConnState.UNKNOWN:    "Not connected",
+            ConnState.IDLE:       "Idle",
+            ConnState.CONNECTING: "Connecting…",
+            ConnState.CONNECTED:  "Pwnagotchi Connected and Ready!",
+            ConnState.ERROR:      "Connection error",
+        }
+        
+        dot_color = color_map.get(state, "#6b7280")
+        status_text = msg if msg is not None else text_map.get(state, "")
+        
+        def _apply():
+            try:
+                self.status_bar.set_state(dot_color, status_text)
+                
+                # Enable/disable backup/restore buttons based on connection state
+                if hasattr(self, 'backup_button') and hasattr(self, 'restore_button'):
+                    is_connected = (state == ConnState.CONNECTED)
+                    btn_state = "normal" if is_connected else "disabled"
+                    self.backup_button.configure(state=btn_state)
+                    self.restore_button.configure(state=btn_state)
+            except Exception:
+                pass  # Safeguard against UI hiccups
+        
+        self.after(0, _apply)
+        self._conn_state = state
+    
+    def _on_live_monitor_changed(self):
+        """Handle live monitor toggle."""
+        if self.live_monitor_var.get():
+            self.monitor.start()
+            self.log_service.log("Live monitoring started", "SYSTEM")
+        else:
+            self.monitor.stop()
+            self.log_service.log("Live monitoring stopped", "SYSTEM")
+    
+    def _on_verbose_logging_changed(self):
+        """Toggle verbose logging mode."""
+        enabled = self.verbose_logging_var.get()
+        if hasattr(self, 'log_service'):
+            self.log_service.set_verbose(enabled)
+        status = "enabled" if enabled else "disabled"
+        self.log_message(f"Verbose logging {status}", "INFO")
+
+    def _on_interval_changed(self, event=None):
+        """Handle monitor interval change."""
+        try:
+            interval = self.live_interval_var.get()
+            if interval < 1:
+                self.live_interval_var.set(1)
+                interval = 1
+            elif interval > 10:
+                self.live_interval_var.set(10)
+                interval = 10
+            
+            if self.monitor:
+                self.monitor.set_interval(interval)
+                self.log_service.log(f"Monitor interval set to {interval}s", "INFO")
+        except Exception:
+            self.live_interval_var.set(2)
+    
+    def _default_backup_name(self):
+        """Generate default backup filename with timestamp."""
+        import time
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        return f"pwnsafe_backup_{ts}.tgz"
+
+    def _choose_backup_path(self):
+        """Open save dialog for backup file."""
+        from pathlib import Path
+        initial_file = self._default_backup_name()
+        path = filedialog.asksaveasfilename(
+            title="Save backup as...",
+            defaultextension=".tgz",
+            initialfile=initial_file,
+            initialdir=str(self._last_backup_dir),
+            filetypes=[("Tar Gzip", "*.tgz"), ("All Files", "*.*")]
+        )
+        if path:
+            self._last_backup_dir = Path(path).parent
+            return path
+        return None
+
+    def _choose_restore_file(self):
+        """Open file dialog for restore source."""
+        from pathlib import Path
+        path = filedialog.askopenfilename(
+            title="Select backup file to restore...",
+            initialdir=str(self._last_backup_dir),
+            filetypes=[("Tar Gzip", "*.tgz"), ("All Files", "*.*")]
+        )
+        if path:
+            self._last_backup_dir = Path(path).parent
+            return path
+        return None
+    
+    def _on_backup_click(self):
+        """Handle backup button click."""
+        # Check connection state
+        if self._conn_state != ConnState.CONNECTED:
+            self.show_toast("Not connected to Pwnagotchi", "error")
+            return
+        
+        # Get backup destination path
+        dest_path = self._choose_backup_path()
+        if not dest_path:
+            return  # User cancelled
+        
+        # Log and start backup
+        self.log_service.log(f"Backup destination: {dest_path}", "INFO")
+        
+        # Save previous state
+        self._prev_state = self._conn_state
+        
+        # Set to connecting during operation
+        self.set_connection_state(ConnState.CONNECTING, "Backup in progress…")
+        self.log_service.log("Starting backup operation", "SYSTEM")
+        
+        # Call app's backup method with path
+        if hasattr(self.app, 'backup_to_path'):
+            self.app.backup_to_path(dest_path)
+        else:
+            self.show_toast("Backup function not available", "error")
+
+    def _on_restore_click(self):
+        """Handle restore button click."""
+        # Check connection state
+        if self._conn_state != ConnState.CONNECTED:
+            self.show_toast("Not connected to Pwnagotchi", "error")
+            return
+        
+        # Get restore source path
+        src_path = self._choose_restore_file()
+        if not src_path:
+            return  # User cancelled
+        
+        # Verify file exists
+        from pathlib import Path
+        if not Path(src_path).exists():
+            self.show_toast("Backup file not found", "error")
+            return
+        
+        # Log and start restore
+        self.log_service.log(f"Restore source: {src_path}", "INFO")
+        
+        # Save previous state
+        self._prev_state = self._conn_state
+        
+        # Set to connecting during operation
+        self.set_connection_state(ConnState.CONNECTING, "Restore in progress…")
+        self.log_service.log("Starting restore operation", "SYSTEM")
+        
+        # Call app's restore method with path
+        if hasattr(self.app, 'restore_from_path'):
+            self.app.restore_from_path(src_path)
+        else:
+            self.show_toast("Restore function not available", "error")
