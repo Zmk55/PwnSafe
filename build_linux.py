@@ -30,7 +30,7 @@ def build_linux_executable():
         "--hidden-import=paramiko",
         "--hidden-import=cryptography",
         "--hidden-import=bcrypt",
-        "--hidden-import=PyNaCl",
+        "--hidden-import=nacl",
         "--hidden-import=cffi",
         "--hidden-import=pycparser",
         "--hidden-import=packaging",

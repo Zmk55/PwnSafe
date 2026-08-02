@@ -188,6 +188,7 @@ Thumbs.db
 backup_*
 restore_*
 test_*
+!tests/test_*.py
 
 # Build artifacts
 PwnSafe_v1.0.0_*/

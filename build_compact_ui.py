@@ -9,6 +9,9 @@ import subprocess
 import shutil
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(errors="replace")
+
 def build_compact_ui_executable():
     """Build Windows executable with the new compact UI."""
     print("Building PwnSafe with Compact UI for Windows...")
@@ -25,15 +28,19 @@ def build_compact_ui_executable():
         "--name=PwnSafe-Compact",       # Name of the executable
         "--icon=icon.ico",              # Icon file (if exists)
         "--add-data=README.md;.",       # Include README
+        "--add-data=drivers;drivers",   # Include RNDIS driver package
+        "--add-data=scripts/win_connection_share.ps1;scripts",  # Include Windows ICS setup script
         "--hidden-import=customtkinter",
         "--hidden-import=paramiko",
         "--hidden-import=cryptography",
         "--hidden-import=bcrypt",
-        "--hidden-import=PyNaCl",
+        "--hidden-import=nacl",
         "--hidden-import=cffi",
         "--hidden-import=pycparser",
         "--hidden-import=packaging",
         "--hidden-import=darkdetect",
+        "--hidden-import=wmi",
+        "--hidden-import=pythoncom",
         "--hidden-import=ui_components",
         "--hidden-import=profile_manager",
         "--hidden-import=ssh_auth_enhanced",

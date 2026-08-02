@@ -6,7 +6,6 @@ Supports password, SSH key, and ssh-agent authentication methods.
 import paramiko
 import os
 import stat
-from pathlib import Path
 
 
 class SSHAuthManager:
@@ -55,6 +54,10 @@ class SSHAuthManager:
                 return self._connect_with_password(ssh, host, username, password, timeout)
                 
         except Exception as e:
+            try:
+                ssh.close()
+            except Exception:
+                pass
             self.log_message(f"SSH Connection Failed: {e}", "ERROR")
             return None
     
@@ -75,6 +78,7 @@ class SSHAuthManager:
         # Try key file authentication
         if not key_path or not os.path.exists(key_path):
             self.log_message(">>> SSH key file not found or not specified <<<", "ERROR")
+            ssh.close()
             return None
         
         try:
@@ -91,6 +95,7 @@ class SSHAuthManager:
             return ssh
             
         except Exception as key_error:
+            ssh.close()
             self.log_message(f">>> SSH key authentication failed: {key_error} <<<", "ERROR")
             return None
     
@@ -102,6 +107,7 @@ class SSHAuthManager:
             self.log_message(">>> Password authentication successful! <<<", "SUCCESS")
             return ssh
         except Exception as e:
+            ssh.close()
             self.log_message(f">>> Password authentication failed: {e} <<<", "ERROR")
             return None
     
@@ -118,8 +124,9 @@ class SSHAuthManager:
                 (paramiko.RSAKey, "RSA"),
                 (paramiko.Ed25519Key, "Ed25519"),
                 (paramiko.ECDSAKey, "ECDSA"),
-                (paramiko.DSSKey, "DSS")
             ]
+            if hasattr(paramiko, "DSSKey"):
+                key_types.append((paramiko.DSSKey, "DSS"))
             
             for key_class, key_name in key_types:
                 try:

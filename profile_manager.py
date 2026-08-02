@@ -5,7 +5,7 @@ Handles profile persistence and management for the compact UI.
 
 import json
 import os
-from pathlib import Path
+import copy
 from cryptography.fernet import Fernet
 import base64
 
@@ -17,13 +17,13 @@ class ProfileManager:
     """
     
     def __init__(self):
-        self.profiles_dir = Path.home() / ".pwnsafe"
-        self.profiles_file = self.profiles_dir / "profiles.json"
+        self.profiles_dir = os.path.join(os.path.expanduser("~"), ".pwnsafe")
+        self.profiles_file = os.path.join(self.profiles_dir, "profiles.json")
         self.profiles_data = {}
         self.encryption_key = None
         
         # Create profiles directory if it doesn't exist
-        self.profiles_dir.mkdir(exist_ok=True)
+        os.makedirs(self.profiles_dir, exist_ok=True)
         
         # Load or create encryption key
         self._load_or_create_key()
@@ -33,9 +33,9 @@ class ProfileManager:
     
     def _load_or_create_key(self):
         """Load or create encryption key for sensitive data."""
-        key_file = self.profiles_dir / ".encryption_key"
+        key_file = os.path.join(self.profiles_dir, ".encryption_key")
         
-        if key_file.exists():
+        if os.path.exists(key_file):
             with open(key_file, "rb") as f:
                 self.encryption_key = f.read()
         else:
@@ -68,7 +68,7 @@ class ProfileManager:
     
     def load_profiles(self):
         """Load profiles from JSON file."""
-        if not self.profiles_file.exists():
+        if not os.path.exists(self.profiles_file):
             self._create_default_profiles()
             return
         
@@ -110,7 +110,7 @@ class ProfileManager:
     def save_profiles(self):
         """Save profiles to JSON file with encrypted sensitive data."""
         # Create a copy for saving with encrypted sensitive data
-        save_data = self.profiles_data.copy()
+        save_data = copy.deepcopy(self.profiles_data)
         
         # Encrypt sensitive fields
         for profile_name, profile in save_data.get("profiles", {}).items():

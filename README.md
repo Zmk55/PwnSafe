@@ -28,10 +28,13 @@ PwnSafe is a Python-based GUI utility designed to facilitate seamless backup and
 
 ### 🤖 Pwnagotchi Integration
 - **🔍 Auto-Detection**: Automatically detect and connect to Pwnagotchi devices
+- **🪟 RNDIS Driver Setup**: On Windows, detect a missing RNDIS driver and offer to install the bundled driver with administrator approval
 - **📸 Snapshot Detection**: Track device connections using MAC address monitoring
 - **🌐 Network Configuration**: Auto-configure network settings for Pwnagotchi connectivity
+- **🔗 Internet Sharing**: Enable native Windows Internet Connection Sharing from the active default-route adapter to the detected RNDIS adapter with UAC approval
 - **🔄 Reconnection Monitoring**: Persistent connection tracking and automatic reconnection
-- **📡 SSH Connectivity**: Built-in SSH testing and connection validation
+- **📡 SSH Connectivity**: Query and display the connected hostname, verify Internet Sharing through `10.0.0.1`, and use an embedded interactive Paramiko terminal
+- **🔑 Automatic Key Setup**: Generate and install a PwnSafe SSH key after a single password prompt when key authentication is not yet configured
 
 ### 🛠️ Advanced Features
 - **🖱️ Enhanced Scrolling**: Improved mouse wheel support for better navigation
@@ -120,6 +123,38 @@ pip install -r requirements.txt
      - The utility will upload the backup file and extract it on the remote system.
 4. View logs in the output window to confirm success or troubleshoot errors.
 
+When the Pwnagotchi is reachable and the selected credentials are complete, the
+Backup, Restore, and SSH controls become available. The SSH control opens the
+embedded Terminal tab using the active password or key credentials. In SSH Key
+mode, PwnSafe prompts once for the device password if it needs to generate and
+install a key. The visible SFTP control is currently a placeholder for a future
+file-transfer interface.
+
+### Replicate Pwnagotchi Device Repairs
+
+The repository includes an idempotent device repair script for the fixes found
+while testing PwnSafe with Pwnagotchi 2.9.5.x. It installs the missing DejaVu
+oblique fonts, fixes the `enable_assoc` UI counter, and shows descriptions for
+disabled plugins without loading them. It does not enable plugins or copy
+credentials. Changed device files receive timestamped `.pwnsafe-*.bak` backups.
+
+From Windows PowerShell:
+
+```powershell
+.\scripts\repair_pwnagotchi.ps1
+```
+
+The launcher defaults to `pi@10.0.0.2` and automatically uses
+`%USERPROFILE%\.ssh\pwnsafe_id_rsa` when present. Use `-TargetHost`,
+`-TargetUser`, `-KeyPath`, or `-NoRestart` when needed.
+
+From Linux or macOS:
+
+```bash
+scp scripts/repair_pwnagotchi.sh pi@10.0.0.2:/tmp/
+ssh -t pi@10.0.0.2 'sudo bash /tmp/repair_pwnagotchi.sh'
+```
+
 ---
 
 ## Development
@@ -127,9 +162,11 @@ pip install -r requirements.txt
 ### Build as Executable
 To package PwnSafe as a standalone executable using `PyInstaller`:
 ```bash
-pyinstaller --onefile --windowed pwnsafe.py
+python build_windows.py
 ```
-The executable will be located in the `dist/` folder.
+The executable will be located in the `dist/` folder. The Windows build script
+also bundles the files in `drivers/` for automatic RNDIS setup and the native
+PowerShell helper in `scripts/` for Internet Connection Sharing.
 
 ### Versioning
 PwnSafe follows Semantic Versioning (`MAJOR.MINOR.PATCH`).
