@@ -113,6 +113,7 @@ class BackupRestoreWorkerTests(unittest.TestCase):
         self.assertIn("grep -qF", ssh.commands[0])
         self.assertTrue(ssh.closed)
 
+    @unittest.skipUnless(os.name == "nt", "Windows-only adapter configuration")
     @mock.patch("ctypes.windll.shell32.IsUserAnAdmin", return_value=True)
     @mock.patch("pwnsafe.subprocess.run")
     def test_windows_adapter_configuration_uses_static_ip_without_gateway(
@@ -216,6 +217,7 @@ class BackupRestoreWorkerTests(unittest.TestCase):
             any("default route does not use 10.0.0.1" in message for _, message in backend.messages)
         )
 
+    @unittest.skipUnless(os.name == "nt", "Windows-only Internet Sharing")
     @mock.patch("ctypes.windll.shell32.IsUserAnAdmin", return_value=False)
     @mock.patch("pwnsafe.time.sleep")
     @mock.patch("pwnsafe.os.path.isfile", return_value=True)

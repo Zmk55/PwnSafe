@@ -1,3 +1,4 @@
+import os
 import subprocess
 import unittest
 from unittest import mock
@@ -35,6 +36,7 @@ class ConnectionMonitorTests(unittest.TestCase):
         self.assertTrue(connection_monitor._probe())
         run.assert_not_called()
 
+    @unittest.skipUnless(os.name == "nt", "Windows-only subprocess flags")
     @mock.patch("monitor.platform.system", return_value="Windows")
     @mock.patch("monitor.subprocess.run")
     def test_windows_ping_is_hidden(self, run, _system):
