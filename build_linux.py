@@ -30,7 +30,7 @@ def build_linux_executable():
         "--hidden-import=paramiko",
         "--hidden-import=cryptography",
         "--hidden-import=bcrypt",
-        "--hidden-import=PyNaCl",
+        "--hidden-import=nacl",
         "--hidden-import=cffi",
         "--hidden-import=pycparser",
         "--hidden-import=packaging",
@@ -71,7 +71,7 @@ def create_installer_script():
     """Create a simple installer script for Linux."""
     installer_content = """#!/bin/bash
 echo "========================================"
-echo "   PwnSafe v1.3.0 - Professional Edition"
+echo "   PwnSafe v1.4.0 - Professional Edition"
 echo "========================================"
 echo ""
 echo "Installing PwnSafe..."

@@ -10,6 +10,9 @@ import subprocess
 import shutil
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(errors="replace")
+
 def build_windows_executable():
     """Build Windows executable using PyInstaller."""
     print("🔧 Building PwnSafe for Windows...")
@@ -26,15 +29,19 @@ def build_windows_executable():
         "--name=PwnSafe",               # Name of the executable
         "--icon=icon.ico",              # Icon file (if exists)
         "--add-data=README.md;.",       # Include README
+        "--add-data=drivers;drivers",   # Include RNDIS driver package
+        "--add-data=scripts/win_connection_share.ps1;scripts",  # Include Windows ICS setup script
         "--hidden-import=customtkinter",
         "--hidden-import=paramiko",
         "--hidden-import=cryptography",
         "--hidden-import=bcrypt",
-        "--hidden-import=PyNaCl",
+        "--hidden-import=nacl",
         "--hidden-import=cffi",
         "--hidden-import=pycparser",
         "--hidden-import=packaging",
         "--hidden-import=darkdetect",
+        "--hidden-import=wmi",
+        "--hidden-import=pythoncom",
         "--clean",                      # Clean cache
         "pwnsafe.py"
     ]
@@ -71,7 +78,7 @@ def create_installer_script():
     """Create a simple installer script."""
     installer_content = """@echo off
 echo ========================================
-echo    PwnSafe v1.0.0 - Professional Edition
+echo    PwnSafe v1.4.0 - Professional Edition
 echo ========================================
 echo.
 echo Installing PwnSafe...

@@ -1,4 +1,4 @@
-__version__ = "1.0.0"
+__version__ = "1.4.0"
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox, Menu
@@ -11,12 +11,27 @@ import subprocess
 import socket
 import time
 import webbrowser
-from pathlib import Path
-import winreg
+import shlex
 import psutil
-import wmi
 from ui_refactor import ConnState
+from ssh_auth_enhanced import SSHAuthManager
 import stat
+
+if platform.system() == "Windows":
+    try:
+        import winreg
+    except ImportError:
+        winreg = None
+    try:
+        import pythoncom
+        import wmi
+    except ImportError:
+        pythoncom = None
+        wmi = None
+else:
+    winreg = None
+    pythoncom = None
+    wmi = None
 
 
 class BackupRestoreApp(ctk.CTk):
@@ -39,6 +54,7 @@ class BackupRestoreApp(ctk.CTk):
         self.baseline_interfaces = set()
         self.detection_mode = "auto"
         self.reconnection_monitoring = False
+        self._rndis_install_prompted = False
         
         # If not using UI, skip all UI initialization and return
         if not use_ui:
@@ -46,7 +62,7 @@ class BackupRestoreApp(ctk.CTk):
         
         # Only set up UI if requested
         if use_ui:
-            self.title("PwnSafe v1.0.0 - Cyberpunk Backup & Restore Utility")
+            self.title("PwnSafe v1.4.0 - Cyberpunk Backup & Restore Utility")
             self.geometry("900x700")
             self.minsize(800, 600)
             
@@ -73,7 +89,7 @@ class BackupRestoreApp(ctk.CTk):
             
             self.header_label = ctk.CTkLabel(
                 self.header_frame, 
-                text="🔒 PwnSafe v1.0.0", 
+                text="🔒 PwnSafe v1.4.0",
                 font=ctk.CTkFont(size=22, weight="bold"),
                 text_color="#00ff00"
             )
@@ -288,7 +304,7 @@ class BackupRestoreApp(ctk.CTk):
         self.output_text.pack(fill="both", expand=True, padx=8, pady=8)
         
         # Initialize with welcome message
-        self.log_message("PwnSafe v1.0.0 - Cyberpunk Backup & Restore Utility", "INFO")
+        self.log_message("PwnSafe v1.4.0 - Cyberpunk Backup & Restore Utility", "INFO")
         self.log_message("System initialized. Ready for operations.", "SUCCESS")
         self.log_message("Automatic Pwnagotchi detection starting...", "INFO")
         
@@ -384,46 +400,189 @@ class BackupRestoreApp(ctk.CTk):
         
         self.output_text.see("end")
 
-    def ssh_connect(self):
-        host = self.host_entry.get()
-        username = self.user_entry.get()
-        password = self.pass_entry.get()
+    def ssh_connect(
+        self,
+        host,
+        username,
+        password="",
+        auth_method="password",
+        ssh_key_path="",
+        ssh_key_passphrase="",
+        use_ssh_agent=False,
+    ):
+        """Connect without reading Tk widgets from a worker thread."""
+        auth = SSHAuthManager(self.log_message)
+        return auth.connect(
+            host=host,
+            username=username,
+            auth_method=auth_method,
+            password=password,
+            ssh_key_path=ssh_key_path,
+            ssh_key_passphrase=ssh_key_passphrase,
+            use_ssh_agent=use_ssh_agent,
+        )
 
+    def setup_ssh_key(self, host, username, password, requested_key_path=""):
+        """Create or reuse a local key and install it with one password login."""
+        if not host or not username or not password:
+            raise ValueError("host, username, and password are required for key setup")
+
+        auth = SSHAuthManager(self.log_message)
+        key = None
+        key_path = ""
+        if requested_key_path and os.path.isfile(requested_key_path):
+            key_path = os.path.abspath(requested_key_path)
+            key = auth._load_private_key(key_path, "")
+            if not key:
+                self.log_message(
+                    "The selected SSH key is invalid; generating a PwnSafe key instead.",
+                    "WARNING",
+                )
+
+        if not key:
+            ssh_dir = os.path.join(os.path.expanduser("~"), ".ssh")
+            os.makedirs(ssh_dir, exist_ok=True)
+            if platform.system() != "Windows":
+                os.chmod(ssh_dir, stat.S_IRWXU)
+
+            base_path = os.path.join(ssh_dir, "pwnsafe_id_rsa")
+            for suffix in range(100):
+                candidate = base_path if suffix == 0 else f"{base_path}_{suffix}"
+                if os.path.exists(candidate):
+                    existing_key = auth._load_private_key(candidate, "")
+                    if existing_key:
+                        key_path, key = candidate, existing_key
+                        break
+                    continue
+                key_path = candidate
+                key = paramiko.RSAKey.generate(3072)
+                key.write_private_key_file(key_path)
+                if platform.system() != "Windows":
+                    os.chmod(key_path, stat.S_IRUSR | stat.S_IWUSR)
+                self.log_message(f"Generated SSH key: {key_path}", "SUCCESS")
+                break
+            if not key:
+                raise RuntimeError("could not create a usable local SSH key")
+
+        public_identity = f"{key.get_name()} {key.get_base64()}"
+        public_key = f"{public_identity} pwnsafe-generated-key"
+        public_key_path = key_path + ".pub"
+        with open(public_key_path, "w", encoding="utf-8") as public_file:
+            public_file.write(public_key + "\n")
+
+        client = None
         try:
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            
-            # Try certificate authentication first if we have a Pwnagotchi connection
-            if (self.pwnagotchi_detected and 
-                host == self.pwnagotchi_ip and 
-                username == self.pwnagotchi_user):
-                
-                ssh_key_path = self.get_ssh_key_path()
-                if os.path.exists(ssh_key_path):
-                    try:
-                        self.log_message("Attempting certificate authentication...", "INFO")
-                        
-                        # Load the private key
-                        private_key = paramiko.RSAKey.from_private_key_file(str(ssh_key_path))
-                        
-                        # Connect using the certificate
-                        ssh.connect(host, username=username, pkey=private_key, timeout=10)
-                        self.log_message("Certificate authentication successful!", "SUCCESS")
-                        return ssh
-                        
-                    except Exception as cert_error:
-                        self.log_message(f"Certificate authentication failed: {cert_error}", "WARNING")
-                        self.log_message("Falling back to password authentication...", "INFO")
-                        # Continue to password authentication below
-            
-            # Password authentication (fallback or primary)
-            ssh.connect(host, username=username, password=password, timeout=10)
-            self.log_message("Password authentication successful!", "SUCCESS")
-            return ssh
-            
-        except Exception as e:
-            self.log_message(f"SSH Connection Failed: {e}", "ERROR")
-            return None
+            client = auth.connect(
+                host=host,
+                username=username,
+                auth_method="password",
+                password=password,
+            )
+            if not client:
+                raise ConnectionError("password authentication failed")
+
+            quoted_identity = shlex.quote(public_identity)
+            quoted_key = shlex.quote(public_key)
+            command = (
+                'umask 077; mkdir -p "$HOME/.ssh" && '
+                'touch "$HOME/.ssh/authorized_keys" && '
+                f'(grep -qF -- {quoted_identity} "$HOME/.ssh/authorized_keys" || '
+                f'printf "%s\\n" {quoted_key} >> "$HOME/.ssh/authorized_keys") && '
+                'chmod 700 "$HOME/.ssh" && chmod 600 "$HOME/.ssh/authorized_keys"'
+            )
+            _, stdout, stderr = client.exec_command(command)
+            error_text = stderr.read().decode(errors="replace").strip()
+            exit_status = stdout.channel.recv_exit_status()
+            if exit_status != 0:
+                raise RuntimeError(
+                    f"authorized_keys update failed with exit code {exit_status}"
+                    + (f": {error_text}" if error_text else "")
+                )
+            self.log_message("SSH public key installed on the Pwnagotchi.", "SUCCESS")
+            return os.path.abspath(key_path)
+        finally:
+            if client:
+                try:
+                    client.close()
+                except Exception as error:
+                    self.log_message(f"SSH close warning: {error}", "WARNING")
+
+    def inspect_device_connection(
+        self,
+        host,
+        username,
+        password="",
+        auth_method="password",
+        ssh_key_path="",
+        ssh_key_passphrase="",
+        use_ssh_agent=False,
+    ):
+        """Read the hostname and verify that internet traffic uses host sharing."""
+        result = {"hostname": "", "internet_shared": False}
+        ssh = None
+        try:
+            ssh = self.ssh_connect(
+                host, username, password, auth_method, ssh_key_path,
+                ssh_key_passphrase, use_ssh_agent,
+            )
+            if not ssh:
+                raise ConnectionError("SSH authentication failed")
+
+            _, stdout, stderr = ssh.exec_command("hostname")
+            hostname = stdout.read().decode(errors="replace").strip()
+            hostname_error = stderr.read().decode(errors="replace").strip()
+            hostname_status = stdout.channel.recv_exit_status()
+            if hostname_status != 0 or not hostname:
+                raise RuntimeError(
+                    f"hostname command failed with exit code {hostname_status}"
+                    + (f": {hostname_error}" if hostname_error else "")
+                )
+            result["hostname"] = hostname.splitlines()[0]
+            self.log_message(f'Device hostname: {result["hostname"]}', "SUCCESS")
+
+            try:
+                _, route_out, route_err = ssh.exec_command("ip route get 8.8.8.8")
+                route_text = route_out.read().decode(errors="replace").strip()
+                route_error = route_err.read().decode(errors="replace").strip()
+                route_status = route_out.channel.recv_exit_status()
+                if route_status != 0:
+                    raise RuntimeError(
+                        f"route check failed with exit code {route_status}"
+                        + (f": {route_error}" if route_error else "")
+                    )
+
+                if "via 10.0.0.1" not in route_text:
+                    self.log_message(
+                        "Internet sharing not verified: the device default route does not use 10.0.0.1.",
+                        "WARNING",
+                    )
+                else:
+                    _, ping_out, ping_err = ssh.exec_command("ping -c 1 -W 3 8.8.8.8")
+                    ping_error = ping_err.read().decode(errors="replace").strip()
+                    ping_status = ping_out.channel.recv_exit_status()
+                    if ping_status == 0:
+                        result["internet_shared"] = True
+                        self.log_message(
+                            "Internet sharing verified: Pwnagotchi has internet access through 10.0.0.1.",
+                            "SUCCESS",
+                        )
+                    else:
+                        self.log_message(
+                            "Internet sharing not verified: the Pwnagotchi cannot reach 8.8.8.8"
+                            + (f" ({ping_error})" if ping_error else "."),
+                            "WARNING",
+                        )
+            except Exception as error:
+                self.log_message(f"Internet sharing check failed: {error}", "WARNING")
+        except Exception as error:
+            self.log_message(f"Could not inspect connected Pwnagotchi: {error}", "WARNING")
+        finally:
+            if ssh:
+                try:
+                    ssh.close()
+                except Exception as error:
+                    self.log_message(f"SSH close warning: {error}", "WARNING")
+        return result
 
     def start_backup(self):
         """Start backup with connection check and user prompts."""
@@ -592,191 +751,194 @@ The backup will be saved as a compressed .tgz file."""
         cancel_button.pack(side="left", padx=10)
 
     def start_backup_process(self, dialog):
-        """Start the actual backup process."""
+        """Collect legacy UI values on the Tk thread, then start the worker."""
         dialog.destroy()
-        self.update_status("Starting backup...")
-        threading.Thread(target=self.backup, daemon=True).start()
-
-    def backup_to_path(self, dest_path):
-        """Backup Pwnagotchi to specified path."""
-        threading.Thread(target=lambda: self._backup_worker(dest_path), daemon=True).start()
-
-    def _backup_worker(self, save_path):
-        """Worker thread for backup operation."""
-        ssh = self.ssh_connect()
-        if not ssh:
-            self.update_status("Backup failed - connection error")
-            return  # Connection failed
-
-        self.log_message("Initiating backup sequence...", "SYSTEM")
-        self.update_status("Creating backup...")
-
-        # This command sends tar output to stdout, then we compress it with gzip
-        # so we can capture the entire thing locally, just like your old batch file.
-        command = (
-            "sudo tar --exclude='/etc/pwnagotchi/log/*.log' "
-            "--warning=none -cf - "
-            "/etc/pwnagotchi/ /root/.ssh /home/pi/handshakes "
-            "| gzip -9"
-        )
-
-        stdin, stdout, stderr = ssh.exec_command(command)
-
-        # Read the compressed data in chunks and write to local file
-        try:
-            with open(save_path, 'wb') as f:
-                while True:
-                    chunk = stdout.read(4096)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-
-            self.log_message(f"Backup completed successfully: {save_path}", "SUCCESS")
-            self.update_status("Backup completed successfully")
-            
-            # Restore previous connection state
-            if hasattr(self, '_prev_state'):
-                self.set_connection_state(self._prev_state, "Pwnagotchi Connected and Ready!")
-            else:
-                self.set_connection_state(ConnState.CONNECTED, "Pwnagotchi Connected and Ready!")
-
-        except Exception as e:
-            self.log_message(f"Backup failed: {str(e)}", "ERROR")
-            self.update_status("Backup failed")
-            self.set_connection_state(ConnState.ERROR, "Backup failed")
-
-        finally:
-            ssh.close()
-
-    def backup(self):
-        ssh = self.ssh_connect()
-        if not ssh:
-            self.update_status("Backup failed - connection error")
-            return  # Connection failed
-
-        self.log_message("Initiating backup sequence...", "SYSTEM")
-        self.update_status("Creating backup...")
-
-        # Ask the user where to save the backup file locally
         save_path = filedialog.asksaveasfilename(
             defaultextension=".tgz", filetypes=[("TGZ Files", "*.tgz")]
         )
         if not save_path:
-            self.log_message("Backup canceled: No save location selected.", "ERROR")
             self.update_status("Backup canceled")
-            ssh.close()
             return
-
-        # This command sends tar output to stdout, then we compress it with gzip
-        # so we can capture the entire thing locally, just like your old batch file.
-        command = (
-            "sudo tar --exclude='/etc/pwnagotchi/log/*.log' "
-            "--warning=none -cf - "
-            "/etc/pwnagotchi/ /root/.ssh /home/pi/handshakes "
-            "| gzip -9"
+        self.backup_to_path(
+            save_path,
+            self.host_entry.get(),
+            self.user_entry.get(),
+            self.pass_entry.get(),
         )
 
-        stdin, stdout, stderr = ssh.exec_command(command)
+    def backup_to_path(
+        self, dest_path, host, username, password="", auth_method="password",
+        ssh_key_path="", ssh_key_passphrase="", use_ssh_agent=False
+    ):
+        """Backup Pwnagotchi to specified path."""
+        threading.Thread(
+            target=self._backup_worker,
+            args=(dest_path, host, username, password, auth_method,
+                  ssh_key_path, ssh_key_passphrase, use_ssh_agent),
+            daemon=True,
+        ).start()
 
+    def _backup_worker(
+        self, save_path, host, username, password="", auth_method="password",
+        ssh_key_path="", ssh_key_passphrase="", use_ssh_agent=False
+    ):
+        """Worker thread for backup operation."""
+        ssh = None
+        partial_path = os.path.abspath(save_path) + ".part"
         try:
-            # 1) Stream the tar+gzip data to the local file
-            with open(save_path, "wb") as f:
+            ssh = self.ssh_connect(
+                host, username, password, auth_method, ssh_key_path,
+                ssh_key_passphrase, use_ssh_agent
+            )
+            if not ssh:
+                raise ConnectionError("SSH authentication failed")
+
+            self.log_message("Initiating backup sequence...", "SYSTEM")
+            self.update_status("Creating backup...")
+            command = (
+                "sudo tar --exclude='/etc/pwnagotchi/log/*.log' "
+                "--warning=none -czf - "
+                "/etc/pwnagotchi/ /root/.ssh /home/pi/handshakes"
+            )
+            _, stdout, stderr = ssh.exec_command(command)
+
+            with open(partial_path, "wb") as backup_file:
                 while True:
                     chunk = stdout.read(4096)
                     if not chunk:
                         break
-                    f.write(chunk)
+                    backup_file.write(chunk)
 
-            # 2) Read any stderr lines (warnings or errors)
-            errors = stderr.read().decode().strip()
-
-            # 3) Check the exit code of the command
-            exit_code = stdout.channel.recv_exit_status()
-
-            # 4) Decide if we succeeded or failed
-            if exit_code == 0:
-                # tar returned success
-                if errors:
-                    # Some warnings (e.g., "Removing leading '/'") - not fatal
-                    for line in errors.splitlines():
-                        self.log_message(f"{line}", "WARNING")
-
-                self.log_message(f"Backup successfully saved to: {save_path}", "SUCCESS")
-                # Restore previous connection state (usually CONNECTED)
-                if hasattr(self, 'ui') and self.ui:
-                    prev_state = getattr(self.ui, '_prev_state', ConnState.CONNECTED)
-                    self.set_connection_state(prev_state, "Pwnagotchi Connected and Ready!")
-            else:
-                # Non-zero exit code => real error
-                self.log_message(f"tar failed with exit code {exit_code}", "ERROR")
-                self.set_connection_state(ConnState.ERROR, "Backup failed - check logs")
-                if errors:
-                    self.log_message(errors, "ERROR")
-
-        except Exception as e:
-            self.log_message(f"Failed to download backup stream: {e}", "ERROR")
-            self.set_connection_state(ConnState.ERROR, "Backup failed - check logs")
-        finally:
-            ssh.close()
-
-    def restore_from_path(self, src_path):
-        """Restore Pwnagotchi from specified path."""
-        threading.Thread(target=lambda: self._restore_worker(src_path), daemon=True).start()
-
-    def _restore_worker(self, restore_path):
-        """Worker thread for restore operation."""
-        ssh = self.ssh_connect()
-        if not ssh:
-            self.update_status("Restore failed - connection error")
-            return  # Connection failed
-
-        self.log_message("Initiating restore sequence...", "SYSTEM")
-        self.update_status("Restoring backup...")
-
-        try:
-            # Read the backup file and send it to the remote system
-            with open(restore_path, 'rb') as f:
-                data = f.read()
-
-            # Create a temporary file on the remote system
-            stdin, stdout, stderr = ssh.exec_command("mktemp")
-            temp_file = stdout.read().decode().strip()
-
-            # Upload the backup data
-            sftp = ssh.open_sftp()
-            with sftp.open(temp_file, 'wb') as remote_file:
-                remote_file.write(data)
-            sftp.close()
-
-            # Extract the backup
-            extract_command = f"sudo tar -xzf {temp_file} -C /"
-            stdin, stdout, stderr = ssh.exec_command(extract_command)
-            
-            # Wait for completion
+            errors = stderr.read().decode(errors="replace").strip()
             exit_status = stdout.channel.recv_exit_status()
-            
-            if exit_status == 0:
-                self.log_message(f"Restore completed successfully from: {restore_path}", "SUCCESS")
-                self.update_status("Restore completed successfully")
-                
-                # Restore previous connection state
-                if hasattr(self, '_prev_state'):
-                    self.set_connection_state(self._prev_state, "Pwnagotchi Connected and Ready!")
-                else:
-                    self.set_connection_state(ConnState.CONNECTED, "Pwnagotchi Connected and Ready!")
-            else:
-                error_msg = stderr.read().decode()
-                self.log_message(f"Restore failed: {error_msg}", "ERROR")
-                self.update_status("Restore failed")
-                self.set_connection_state(ConnState.ERROR, "Restore failed")
+            if exit_status != 0:
+                raise RuntimeError(
+                    f"remote tar failed with exit code {exit_status}"
+                    + (f": {errors}" if errors else "")
+                )
+
+            os.replace(partial_path, os.path.abspath(save_path))
+            if errors:
+                for line in errors.splitlines():
+                    self.log_message(line, "WARNING")
+
+            self.log_message(f"Backup completed successfully: {save_path}", "SUCCESS")
+            self.update_status("Backup completed successfully")
+            self.show_toast("Backup completed successfully", "success")
+
+            self.set_connection_state(ConnState.CONNECTED, "Pwnagotchi Connected and Ready!")
 
         except Exception as e:
-            self.log_message(f"Restore failed: {str(e)}", "ERROR")
-            self.update_status("Restore failed")
-            self.set_connection_state(ConnState.ERROR, "Restore failed")
+            try:
+                if os.path.exists(partial_path):
+                    os.remove(partial_path)
+            except OSError as cleanup_error:
+                self.log_message(f"Could not remove partial backup: {cleanup_error}", "WARNING")
+            self.log_message(f"Backup failed: {e}", "ERROR")
+            self.update_status("Backup failed - check logs")
+            self.set_connection_state(ConnState.ERROR, "Backup failed - check logs")
+            self.show_toast(f"Backup failed: {e}", "error")
 
         finally:
-            ssh.close()
+            if ssh:
+                try:
+                    ssh.close()
+                except Exception as close_error:
+                    self.log_message(f"SSH close warning: {close_error}", "WARNING")
+
+    def restore_from_path(
+        self, src_path, host, username, password="", auth_method="password",
+        ssh_key_path="", ssh_key_passphrase="", use_ssh_agent=False
+    ):
+        """Restore Pwnagotchi from specified path."""
+        threading.Thread(
+            target=self._restore_worker,
+            args=(src_path, host, username, password, auth_method,
+                  ssh_key_path, ssh_key_passphrase, use_ssh_agent),
+            daemon=True,
+        ).start()
+
+    def _restore_worker(
+        self, restore_path, host, username, password="", auth_method="password",
+        ssh_key_path="", ssh_key_passphrase="", use_ssh_agent=False
+    ):
+        """Worker thread for restore operation."""
+        ssh = None
+        remote_temp = ""
+        try:
+            ssh = self.ssh_connect(
+                host, username, password, auth_method, ssh_key_path,
+                ssh_key_passphrase, use_ssh_agent
+            )
+            if not ssh:
+                raise ConnectionError("SSH authentication failed")
+
+            self.log_message("Initiating restore sequence...", "SYSTEM")
+            self.update_status("Uploading backup...")
+
+            _, stdout, stderr = ssh.exec_command("mktemp")
+            remote_temp = stdout.read().decode(errors="replace").strip()
+            mktemp_error = stderr.read().decode(errors="replace").strip()
+            mktemp_status = stdout.channel.recv_exit_status()
+            if mktemp_status != 0 or not remote_temp:
+                raise RuntimeError(
+                    f"could not create remote temporary file"
+                    + (f": {mktemp_error}" if mktemp_error else "")
+                )
+
+            sftp = ssh.open_sftp()
+            try:
+                sftp.put(os.path.abspath(restore_path), remote_temp)
+            finally:
+                sftp.close()
+
+            self.update_status("Restoring backup...")
+            quoted_temp = "'" + remote_temp.replace("'", "'\"'\"'") + "'"
+            extract_command = (
+                f"sudo tar -xzf {quoted_temp} -C / && rm -f {quoted_temp}"
+            )
+            _, stdout, stderr = ssh.exec_command(extract_command)
+            extract_error = stderr.read().decode(errors="replace").strip()
+            exit_status = stdout.channel.recv_exit_status()
+            if exit_status != 0:
+                raise RuntimeError(
+                    f"remote tar failed with exit code {exit_status}"
+                    + (f": {extract_error}" if extract_error else "")
+                )
+
+            remote_temp = ""
+            self.log_message(f"Restore completed successfully from: {restore_path}", "SUCCESS")
+            self.update_status("Restore completed successfully")
+            self.set_connection_state(ConnState.CONNECTED, "Pwnagotchi Connected and Ready!")
+            self.show_toast("Restore completed successfully", "success")
+
+        except Exception as e:
+            self.log_message(f"Restore failed: {e}", "ERROR")
+            self.update_status("Restore failed - check logs")
+            self.set_connection_state(ConnState.ERROR, "Restore failed - check logs")
+            self.show_toast(f"Restore failed: {e}", "error")
+
+        finally:
+            if ssh and remote_temp:
+                try:
+                    quoted_temp = "'" + remote_temp.replace("'", "'\"'\"'") + "'"
+                    _, cleanup_out, cleanup_err = ssh.exec_command(f"rm -f {quoted_temp}")
+                    cleanup_message = cleanup_err.read().decode(errors="replace").strip()
+                    if cleanup_out.channel.recv_exit_status() != 0:
+                        self.log_message(
+                            f"Could not remove remote temporary file: {cleanup_message}",
+                            "WARNING",
+                        )
+                except Exception as cleanup_error:
+                    self.log_message(
+                        f"Could not remove remote temporary file: {cleanup_error}",
+                        "WARNING",
+                    )
+            if ssh:
+                try:
+                    ssh.close()
+                except Exception as close_error:
+                    self.log_message(f"SSH close warning: {close_error}", "WARNING")
 
     def start_restore(self):
         """Start restore with connection check and user prompts."""
@@ -862,10 +1024,19 @@ WARNING: This will overwrite existing data on your Pwnagotchi!"""
         cancel_button.pack(side="left", padx=10)
 
     def start_restore_process(self, dialog):
-        """Start the actual restore process."""
+        """Collect legacy UI values on the Tk thread, then start the worker."""
         dialog.destroy()
-        self.update_status("Starting restore...")
-        threading.Thread(target=self.restore, daemon=True).start()
+        restore_path = self.file_entry.get().strip()
+        if not restore_path or not os.path.isfile(restore_path):
+            self.log_message("No valid backup file selected", "ERROR")
+            self.update_status("Restore failed - no file selected")
+            return
+        self.restore_from_path(
+            restore_path,
+            self.host_entry.get(),
+            self.user_entry.get(),
+            self.pass_entry.get(),
+        )
 
     def start_connection_sharing(self):
         """Start connection sharing in background thread."""
@@ -873,58 +1044,6 @@ WARNING: This will overwrite existing data on your Pwnagotchi!"""
             threading.Thread(target=self.setup_internet_sharing_windows, daemon=True).start()
         else:
             threading.Thread(target=self.setup_connection_sharing, daemon=True).start()
-
-    def restore(self):
-        ssh = self.ssh_connect()
-        if not ssh:
-            self.update_status("Restore failed - connection error")
-            return  # Connection failed
-
-        backup_file = self.file_entry.get()
-        if not backup_file:
-            self.log_message("No backup file selected!", "ERROR")
-            self.update_status("Restore failed - no file selected")
-            ssh.close()
-            return
-
-        self.log_message(f"Uploading {backup_file}...", "SYSTEM")
-        self.update_status("Uploading backup file...")
-        try:
-            sftp = ssh.open_sftp()
-            sftp.put(backup_file, "/tmp/restore.tgz")
-            sftp.close()
-            self.log_message("File uploaded successfully.", "SUCCESS")
-        except Exception as e:
-            self.log_message(f"Failed to upload file: {e}", "ERROR")
-            self.update_status("Restore failed - upload error")
-            ssh.close()
-            return
-
-        self.log_message("Restoring backup on remote device...", "SYSTEM")
-        self.update_status("Restoring backup...")
-        command = "sudo tar -xzvf /tmp/restore.tgz -C /"
-        stdin, stdout, stderr = ssh.exec_command(command)
-        errors = stderr.read().decode().strip()
-        output = stdout.read().decode()
-
-        # Check exit code to see if restore succeeded
-        exit_code = stdout.channel.recv_exit_status()
-        if exit_code == 0:
-            # Success
-            if errors:
-                # Could be warnings
-                self.log_message(f"{errors}", "WARNING")
-            self.log_message(f"Restore Output: {output}")
-            self.log_message("Restore completed successfully!", "SUCCESS")
-            self.update_status("Restore completed successfully!")
-        else:
-            # Failure
-            self.log_message(f"tar restore failed with exit code {exit_code}", "ERROR")
-            self.update_status("Restore failed - check logs")
-            if errors:
-                self.log_message(errors, "ERROR")
-
-        ssh.close()
 
     def detect_platform(self):
         """Detect the current operating system and log it."""
@@ -934,12 +1053,131 @@ WARNING: This will overwrite existing data on your Pwnagotchi!"""
     
     def get_resource_path(self, relative_path):
         """Get the absolute path to a resource, works for dev and for PyInstaller."""
-        try:
-            # PyInstaller creates a temp folder and stores path in _MEIPASS
-            base_path = sys._MEIPASS
-        except Exception:
-            base_path = os.path.abspath(".")
+        base_path = getattr(
+            sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__))
+        )
         return os.path.join(base_path, relative_path)
+
+    def is_rndis_driver_installed(self):
+        """Return whether the supplied RNDIS driver is installed on Windows."""
+        if not self.is_windows:
+            return True
+
+        try:
+            result = subprocess.run(
+                ["pnputil.exe", "/enum-drivers"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.strip() or "pnputil failed")
+            output = result.stdout.lower()
+            if "rndis.inf" in output or "usb remote ndis" in output:
+                return True
+        except Exception as e:
+            self.log_message(f"Could not inspect the Windows driver store: {e}", "WARNING")
+
+        com_initialized = False
+        try:
+            if wmi is None:
+                return False
+            if pythoncom is not None:
+                pythoncom.CoInitialize()
+                com_initialized = True
+            for driver in wmi.WMI().Win32_PnPSignedDriver():
+                name = " ".join(
+                    str(value or "")
+                    for value in (
+                        getattr(driver, "DeviceName", ""),
+                        getattr(driver, "DriverProviderName", ""),
+                        getattr(driver, "InfName", ""),
+                    )
+                ).lower()
+                if "rndis" in name or "remote ndis" in name:
+                    return True
+            return False
+        except Exception as e:
+            self.log_message(f"Could not query installed Windows drivers: {e}", "WARNING")
+            return False
+        finally:
+            if com_initialized:
+                pythoncom.CoUninitialize()
+
+    def install_rndis_driver(self):
+        """Install the bundled RNDIS INF, requesting UAC elevation if needed."""
+        if not self.is_windows:
+            return False
+
+        inf_path = self.get_resource_path(os.path.join("drivers", "RNDIS.inf"))
+        catalog_path = self.get_resource_path(os.path.join("drivers", "RNDIS.cat"))
+        if not os.path.isfile(inf_path) or not os.path.isfile(catalog_path):
+            self.log_message("Bundled RNDIS driver files are missing", "ERROR")
+            self.show_toast("Bundled RNDIS driver files are missing", "error")
+            return False
+
+        try:
+            import ctypes
+
+            self.log_message("Installing the bundled RNDIS driver...", "SYSTEM")
+            if ctypes.windll.shell32.IsUserAnAdmin():
+                result = subprocess.run(
+                    ["pnputil.exe", "/add-driver", inf_path, "/install"],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                if result.returncode != 0:
+                    raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+            else:
+                parameters = subprocess.list2cmdline(
+                    ["/add-driver", inf_path, "/install"]
+                )
+                shell_execute = ctypes.windll.shell32.ShellExecuteW
+                shell_execute.restype = ctypes.c_void_p
+                launch_result = shell_execute(
+                    None, "runas", "pnputil.exe", parameters, None, 0
+                )
+                if int(launch_result or 0) <= 32:
+                    raise PermissionError(
+                        "administrator approval was denied or pnputil could not start"
+                    )
+
+                for _ in range(60):
+                    if self.is_rndis_driver_installed():
+                        break
+                    time.sleep(1)
+                else:
+                    raise RuntimeError("driver installation did not complete")
+
+            if not self.is_rndis_driver_installed():
+                raise RuntimeError("Windows did not register the RNDIS driver")
+
+            self.log_message("RNDIS driver installed successfully", "SUCCESS")
+            self.show_toast("RNDIS driver installed successfully", "success")
+            return True
+        except Exception as e:
+            self.log_message(f"RNDIS driver installation failed: {e}", "ERROR")
+            self.show_toast(f"RNDIS driver installation failed: {e}", "error")
+            return False
+
+    def ensure_rndis_driver(self):
+        """Prompt once per run to install the bundled driver when it is missing."""
+        if not self.is_windows or self.is_rndis_driver_installed():
+            return True
+        if self._rndis_install_prompted:
+            return False
+
+        self._rndis_install_prompted = True
+        if not hasattr(self, "ui") or not self.ui:
+            self.log_message("RNDIS driver is missing; UI confirmation is required", "ERROR")
+            return False
+
+        inf_path = self.get_resource_path(os.path.join("drivers", "RNDIS.inf"))
+        if not self.ui.confirm_rndis_driver_install(os.path.basename(inf_path)):
+            self.log_message("RNDIS driver installation was declined", "WARNING")
+            return False
+        return self.install_rndis_driver()
 
     def create_menu_bar(self):
         """Create the application menu bar."""
@@ -992,7 +1230,7 @@ WARNING: This will overwrite existing data on your Pwnagotchi!"""
         # Title
         title_label = ctk.CTkLabel(
             main_frame,
-            text="PwnSafe v1.0.0",
+            text="PwnSafe v1.4.0",
             font=("Courier New", 24, "bold"),
             text_color="#00ff00"
         )
@@ -1747,8 +1985,19 @@ and internet connection sharing capabilities."""
         """Detect Pwnagotchi on Windows using RNDIS adapter detection."""
         if not self.is_windows:
             return False
-            
+        if not self.ensure_rndis_driver():
+            self.set_connection_state(ConnState.ERROR, "RNDIS driver is required")
+            return False
+        if wmi is None:
+            self.log_message("WMI support is not installed", "ERROR")
+            self.set_connection_state(ConnState.ERROR, "WMI support is unavailable")
+            return False
+
+        com_initialized = False
         try:
+            if pythoncom is not None:
+                pythoncom.CoInitialize()
+                com_initialized = True
             self.log_message("Searching for connected Pwnagotchi device...", "INFO")
             
             # Use WMI to get network adapters
@@ -1782,172 +2031,206 @@ and internet connection sharing capabilities."""
         except Exception as e:
             self.log_message(f"Detection error: {e}", "ERROR")
             return False
+        finally:
+            if com_initialized:
+                pythoncom.CoUninitialize()
+
+    def _windows_adapter_has_expected_ip(self):
+        """Check whether Windows actually applied 10.0.0.1/24 to the adapter."""
+        try:
+            for address in psutil.net_if_addrs().get(self.pwnagotchi_adapter_name, []):
+                if (
+                    address.family == socket.AF_INET
+                    and address.address == "10.0.0.1"
+                    and address.netmask == "255.255.255.0"
+                ):
+                    return True
+        except Exception as e:
+            self.log_message(f"Could not verify adapter address: {e}", "WARNING")
+        return False
+
+    def _configure_windows_adapter_ip(self):
+        """Apply the static RNDIS address, requesting UAC elevation if required."""
+        import ctypes
+
+        arguments = [
+            "interface", "ipv4", "set", "address",
+            f"name={self.pwnagotchi_adapter_name}",
+            "source=static", "address=10.0.0.1", "mask=255.255.255.0",
+            "gateway=none", "store=persistent",
+        ]
+
+        if ctypes.windll.shell32.IsUserAnAdmin():
+            result = subprocess.run(
+                ["netsh.exe", *arguments],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                error = result.stderr.strip() or result.stdout.strip() or "netsh failed"
+                raise RuntimeError(error)
+        else:
+            self.log_message(
+                "Administrator approval is required to configure the RNDIS adapter.",
+                "INFO",
+            )
+            shell_execute = ctypes.windll.shell32.ShellExecuteW
+            shell_execute.restype = ctypes.c_void_p
+            launch_result = shell_execute(
+                None,
+                "runas",
+                "netsh.exe",
+                subprocess.list2cmdline(arguments),
+                None,
+                0,
+            )
+            if int(launch_result or 0) <= 32:
+                raise PermissionError("administrator approval was denied")
+
+        for _ in range(30):
+            if self._windows_adapter_has_expected_ip():
+                return True
+            time.sleep(0.5)
+        return False
 
     def configure_pwnagotchi_windows(self):
-        """Configure Windows network settings for Pwnagotchi based on official guide."""
+        """Assign and verify the Windows host address for the Pwnagotchi link."""
         if not self.pwnagotchi_adapter_name:
-            return False
-            
-        try:
-            # User-facing message with full config details
-            self.log_message("Configuring network: IP 10.0.0.1/24, DNS 8.8.8.8, 1.1.1.1", "INFO")
-            
-            # Verbose: netsh commands
-            self.log_message(f"Setting IP via netsh on {self.pwnagotchi_adapter_name}", "INFO", verbose=True)
-            
-            # Set static IP configuration
-            result = subprocess.run([
-                "netsh", "interface", "ip", "set", "address", 
-                f"name=\"{self.pwnagotchi_adapter_name}\"", 
-                "static", "10.0.0.1", "255.255.255.0", "10.0.0.1"
-            ], capture_output=True, text=True, shell=True)
-            
-            if result.returncode == 0:
-                self.log_message("IP address configured successfully", "SUCCESS", verbose=True)
-            else:
-                self.log_message(f"IP configuration warning: {result.stderr}", "WARNING", verbose=True)
-            
-            # Set DNS servers
-            self.log_message("Setting DNS servers: 8.8.8.8, 1.1.1.1", "INFO", verbose=True)
-            subprocess.run([
-                "netsh", "interface", "ip", "set", "dns", 
-                f"name=\"{self.pwnagotchi_adapter_name}\"", 
-                "static", "8.8.8.8"
-            ], capture_output=True, text=True, shell=True)
-            
-            subprocess.run([
-                "netsh", "interface", "ip", "add", "dns", 
-                f"name=\"{self.pwnagotchi_adapter_name}\"", 
-                "1.1.1.1", "index=2"
-            ], capture_output=True, text=True, shell=True)
-            
-            self.log_message("DNS servers configured", "SUCCESS", verbose=True)
-            self.log_message("Network configuration complete.", "SUCCESS")
-            self.log_message("Verifying Pwnagotchi connectivity...", "INFO")
-            
-            # Test connectivity
-            if self.test_pwnagotchi_connection():
-                self.pwnagotchi_detected = True
-                self.auto_configure_pwnagotchi()
-                self.set_connection_state(ConnState.CONNECTED, "Pwnagotchi Connected and Ready!")
-                self.log_message("Pwnagotchi connected and ready!", "SUCCESS")
-                return True
-            else:
-                self.log_message("Unable to reach Pwnagotchi device", "ERROR")
-                return False
-                
-        except AttributeError as e:
-            self.log_message(f">>> Windows configuration error: {e} <<<", "ERROR")
-            self.log_message(">>> This usually means the UI widgets are not accessible <<<", "INFO")
-            self.log_message(">>> Try manually entering connection details <<<", "INFO")
-            self.set_connection_state(ConnState.ERROR, f"Detection error: {str(e)[:50]}")
-            return False
-        except Exception as e:
-            self.log_message(f">>> Windows configuration error: {e} <<<", "ERROR")
-            import traceback
-            self.log_message(f">>> Error details: {traceback.format_exc()} <<<", "ERROR")
-            self.set_connection_state(ConnState.ERROR, f"Detection error: {str(e)[:50]}")
             return False
 
-    def setup_internet_sharing_windows(self):
-        """Setup internet connection sharing on Windows for Pwnagotchi."""
-        if not self.is_windows:
-            self.log_message(">>> Internet sharing not available on this system <<<", "ERROR")
-            return False
-            
-        if not self.pwnagotchi_adapter_name:
-            self.log_message(">>> No Pwnagotchi adapter detected <<<", "ERROR")
-            self.log_message(">>> Please connect and detect your Pwnagotchi first <<<", "INFO")
-            return False
-            
         try:
-            self.log_message(">>> Setting up Windows internet connection sharing... <<<", "SYSTEM")
-            
-            # Find the main internet adapter
-            main_adapter = self.find_main_internet_adapter_windows()
-            if not main_adapter:
-                self.log_message(">>> Could not find main internet adapter automatically <<<", "ERROR")
-                self.log_message(">>> Please select your internet adapter manually <<<", "INFO")
-                
-                # Show manual adapter selection dialog
-                main_adapter = self.show_adapter_selection_dialog()
-                if not main_adapter:
-                    self.log_message(">>> No adapter selected, internet sharing cancelled <<<", "ERROR")
-                    return False
-                
-            self.log_message(f">>> Main internet adapter: {main_adapter} <<<", "INFO")
-            self.log_message(f">>> Sharing to Pwnagotchi adapter: {self.pwnagotchi_adapter_name} <<<", "INFO")
-            
-            # Step 1: Configure the Pwnagotchi adapter properly
-            self.log_message(">>> Configuring Pwnagotchi adapter for internet sharing... <<<", "INFO")
-            
-            # Ensure Pwnagotchi adapter has correct IP configuration
-            pwnagotchi_config_result = subprocess.run([
-                "netsh", "interface", "ip", "set", "address", 
-                f"name=\"{self.pwnagotchi_adapter_name}\"", 
-                "static", "10.0.0.1", "255.255.255.0"
-            ], capture_output=True, text=True, shell=True)
-            
-            if pwnagotchi_config_result.returncode == 0:
-                self.log_message(">>> Pwnagotchi adapter configured successfully <<<", "SUCCESS")
-            else:
-                self.log_message(">>> Pwnagotchi adapter configuration warning <<<", "WARNING")
-            
-            # Step 2: Enable Internet Connection Sharing using multiple methods
-            self.log_message(">>> Enabling Internet Connection Sharing... <<<", "INFO")
-            
-            # Method 1: Try using netsh to enable ICS
-            ics_success = self.enable_ics_automatic(main_adapter)
-            
-            if not ics_success:
-                # Method 2: Try using PowerShell to enable ICS
-                ics_success = self.enable_ics_powershell(main_adapter)
-            
-            if not ics_success:
-                # Method 3: Try using registry modifications
-                ics_success = self.enable_ics_registry(main_adapter)
-            
-            if ics_success:
-                self.log_message(">>> Internet Connection Sharing enabled successfully! <<<", "SUCCESS")
-            else:
-                self.log_message(">>> Automatic ICS setup failed, manual setup required <<<", "WARNING")
-            
-            # Step 3: Add route for Pwnagotchi network
-            self.log_message(">>> Adding route for Pwnagotchi network... <<<", "INFO")
-            route_result = subprocess.run([
-                "netsh", "interface", "ip", "add", "route", 
-                "10.0.0.0/24", f"interface=\"{self.pwnagotchi_adapter_name}\"", "nexthop=10.0.0.1"
-            ], capture_output=True, text=True, shell=True)
-            
-            if route_result.returncode == 0:
-                self.log_message(">>> Route added successfully <<<", "SUCCESS")
-            else:
-                self.log_message(">>> Route addition failed, trying alternative method <<<", "WARNING")
-                
-                # Alternative: Try to add a static route
-                alt_route_result = subprocess.run([
-                    "route", "add", "10.0.0.0", "mask", "255.255.255.0", "10.0.0.1"
-                ], capture_output=True, text=True, shell=True)
-                
-                if alt_route_result.returncode == 0:
-                    self.log_message(">>> Alternative route added successfully <<<", "SUCCESS")
-                else:
-                    self.log_message(">>> Route addition failed completely <<<", "ERROR")
-            
-            # Step 4: Verify the setup
-            self.log_message(">>> Verifying internet sharing setup... <<<", "INFO")
-            if self.verify_internet_sharing():
-                self.log_message(">>> Internet sharing setup completed successfully! <<<", "SUCCESS")
-                self.log_message(">>> Pwnagotchi should now have internet access <<<", "SUCCESS")
-                return True
-            else:
-                self.log_message(">>> Internet sharing verification failed <<<", "WARNING")
-                self.show_manual_ics_instructions(main_adapter)
-                return False
-                
+            self.log_message(
+                f"Configuring {self.pwnagotchi_adapter_name}: IP 10.0.0.1/24",
+                "INFO",
+            )
+            if self._windows_adapter_has_expected_ip():
+                self.log_message("RNDIS adapter is already configured", "INFO")
+            elif not self._configure_windows_adapter_ip():
+                raise RuntimeError("Windows did not apply 10.0.0.1/24 to the adapter")
+
+            self.log_message("Network configuration verified: 10.0.0.1/24", "SUCCESS")
+            self.log_message("Waiting for Pwnagotchi SSH on 10.0.0.2...", "INFO")
+
+            for _ in range(20):
+                try:
+                    connection = socket.create_connection((self.pwnagotchi_ip, 22), timeout=1)
+                    connection.close()
+                    self.pwnagotchi_detected = True
+                    self.auto_configure_pwnagotchi()
+                    self.set_connection_state(
+                        ConnState.CONNECTED, "Pwnagotchi Connected and Ready!"
+                    )
+                    self.log_message("Pwnagotchi connected and ready!", "SUCCESS")
+                    return True
+                except OSError:
+                    time.sleep(1)
+
+            self.log_message(
+                "Adapter configured; Pwnagotchi SSH is not ready yet. Live monitoring will continue.",
+                "WARNING",
+            )
+            self.set_connection_state(ConnState.CONNECTING, "Waiting for Pwnagotchi SSH...")
+            return True
         except Exception as e:
-            self.log_message(f">>> Internet sharing error: {e} <<<", "ERROR")
-            self.log_message(">>> Try running as administrator for full functionality <<<", "WARNING")
+            self.log_message(f"Windows network configuration failed: {e}", "ERROR")
+            self.set_connection_state(ConnState.ERROR, "Network configuration failed")
+            self.show_toast(f"Network configuration failed: {e}", "error")
+            return False
+
+    def setup_internet_sharing_windows(
+        self,
+        host=None,
+        username=None,
+        password="",
+        auth_method="password",
+        ssh_key_path="",
+        ssh_key_passphrase="",
+        use_ssh_agent=False,
+    ):
+        """Enable native Windows ICS and verify the Pwnagotchi route over SSH."""
+        if not self.is_windows:
+            self.log_message("Internet sharing setup is only available on Windows.", "ERROR")
+            return False
+
+        if not self.pwnagotchi_adapter_name:
+            self.log_message("No detected RNDIS adapter is available for sharing.", "ERROR")
+            return False
+
+        try:
+            import ctypes
+
+            script_path = self.get_resource_path(
+                os.path.join("scripts", "win_connection_share.ps1")
+            )
+            if not os.path.isfile(script_path):
+                raise FileNotFoundError(f"Bundled sharing script not found: {script_path}")
+
+            script_arguments = [
+                "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                "-File", script_path,
+                "-PrivateAdapter", self.pwnagotchi_adapter_name,
+                "-ScopeAddress", "10.0.0.1",
+            ]
+            powershell = "powershell.exe"
+            self.log_message(
+                f"Enabling Windows Internet Sharing for {self.pwnagotchi_adapter_name}...",
+                "SYSTEM",
+            )
+
+            if ctypes.windll.shell32.IsUserAnAdmin():
+                command = [powershell, *script_arguments]
+            else:
+                self.log_message(
+                    "Administrator approval is required to enable Internet Sharing.",
+                    "INFO",
+                )
+                child_arguments = subprocess.list2cmdline(script_arguments).replace("'", "''")
+                elevation_command = (
+                    "$ErrorActionPreference='Stop'; "
+                    f"$p=Start-Process -FilePath '{powershell}' -ArgumentList '{child_arguments}' "
+                    "-Verb RunAs -Wait -PassThru; exit $p.ExitCode"
+                )
+                command = [powershell, "-NoProfile", "-NonInteractive", "-Command", elevation_command]
+
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=90,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if completed.returncode != 0:
+                detail = completed.stderr.strip() or completed.stdout.strip()
+                raise RuntimeError(detail or f"PowerShell exited with code {completed.returncode}")
+
+            public_adapter = "the active internet adapter"
+            for line in completed.stdout.splitlines():
+                if line.startswith("PUBLIC_ADAPTER="):
+                    public_adapter = line.partition("=")[2].strip()
+            self.log_message(
+                f"Windows Internet Sharing enabled: {public_adapter} -> {self.pwnagotchi_adapter_name}.",
+                "SUCCESS",
+            )
+
+            time.sleep(3)
+            inspection = self.inspect_device_connection(
+                host or self.pwnagotchi_ip,
+                username or self.pwnagotchi_user,
+                password or self.pwnagotchi_pass,
+                auth_method,
+                ssh_key_path,
+                ssh_key_passphrase,
+                use_ssh_agent,
+            )
+            if not inspection.get("internet_shared"):
+                self.log_message(
+                    "Windows ICS is enabled, but device internet access was not verified yet.",
+                    "WARNING",
+                )
+            return True
+        except Exception as e:
+            self.log_message(f"Internet sharing setup failed: {e}", "ERROR")
             return False
 
     def find_main_internet_adapter_windows(self):
@@ -2324,10 +2607,9 @@ and internet connection sharing capabilities."""
 
     def get_ssh_key_path(self):
         """Get the path to the SSH key file."""
-        home_dir = Path.home()
-        ssh_dir = home_dir / ".ssh"
-        ssh_dir.mkdir(exist_ok=True)
-        return ssh_dir / "pwnagotchi_key"
+        ssh_dir = os.path.join(os.path.expanduser("~"), ".ssh")
+        os.makedirs(ssh_dir, exist_ok=True)
+        return os.path.join(ssh_dir, "pwnagotchi_key")
 
     def test_ssh_certificate_connection_silent(self):
         """Test SSH certificate connection without UI updates."""
@@ -3196,6 +3478,8 @@ This should be the adapter that provides your internet connection (Wi-Fi, Ethern
     def check_wmi_availability(self):
         """Check if WMI service is available on Windows."""
         try:
+            if wmi is None:
+                return False
             c = wmi.WMI()
             # Try to query something simple
             list(c.Win32_NetworkAdapter()[:1])

@@ -10,6 +10,9 @@ import platform
 import subprocess
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(errors="replace")
+
 def detect_platform():
     """Detect the current platform."""
     system = platform.system().lower()
@@ -49,15 +52,19 @@ def build_windows():
         "--windowed",
         "--name=PwnSafe",
         "--add-data=README.md;.",
+        "--add-data=drivers;drivers",
+        "--add-data=scripts/win_connection_share.ps1;scripts",
         "--hidden-import=customtkinter",
         "--hidden-import=paramiko",
         "--hidden-import=cryptography",
         "--hidden-import=bcrypt",
-        "--hidden-import=PyNaCl",
+        "--hidden-import=nacl",
         "--hidden-import=cffi",
         "--hidden-import=pycparser",
         "--hidden-import=packaging",
         "--hidden-import=darkdetect",
+        "--hidden-import=wmi",
+        "--hidden-import=pythoncom",
         "--clean",
         "pwnsafe.py"
     ]
@@ -83,7 +90,7 @@ def build_linux():
         "--hidden-import=paramiko",
         "--hidden-import=cryptography",
         "--hidden-import=bcrypt",
-        "--hidden-import=PyNaCl",
+        "--hidden-import=nacl",
         "--hidden-import=cffi",
         "--hidden-import=pycparser",
         "--hidden-import=packaging",
@@ -117,7 +124,7 @@ def build_macos():
         "--hidden-import=paramiko",
         "--hidden-import=cryptography",
         "--hidden-import=bcrypt",
-        "--hidden-import=PyNaCl",
+        "--hidden-import=nacl",
         "--hidden-import=cffi",
         "--hidden-import=pycparser",
         "--hidden-import=packaging",
@@ -144,7 +151,7 @@ def create_distribution_package():
         return False
     
     # Create package directory
-    package_name = f"PwnSafe_v1.3.0_{current_platform}"
+    package_name = f"PwnSafe_v1.4.0_{current_platform}"
     package_dir = Path(package_name)
     package_dir.mkdir(exist_ok=True)
     
@@ -208,7 +215,7 @@ def main():
         create_distribution_package()
         print("\n🎉 Build process completed successfully!")
         print(f"\n📁 Executable location: dist/")
-        print(f"📦 Package location: PwnSafe_v1.3.0_{detect_platform()}/")
+        print(f"📦 Package location: PwnSafe_v1.4.0_{detect_platform()}/")
     else:
         print("\n❌ Build process failed!")
         sys.exit(1)

@@ -49,24 +49,6 @@ def _tcp_connect(host: str, port: int, timeout: float = 0.8) -> bool:
         return False
 
 
-def _win_is_connected(ifname: str) -> bool:
-    """Check if Windows interface is in Connected state using netsh."""
-    if platform.system().lower() != "windows" or not ifname:
-        return True
-    try:
-        # Query interface state
-        p = subprocess.run(
-            ["netsh", "interface", "show", "interface", f"name={ifname}"],
-            capture_output=True, text=True, timeout=1.2
-        )
-        out = (p.stdout or "") + (p.stderr or "")
-        # Accept "Connect state: Connected"
-        return "Connect state" in out and "Connected" in out
-    except Exception:
-        # If netsh fails, fall back to psutil only
-        return True
-
-
 def _windows_icmp(host: str, timeout_ms: int = 700) -> bool:
     """Windows-specific ICMP ping with timeout."""
     try:
@@ -77,6 +59,7 @@ def _windows_icmp(host: str, timeout_ms: int = 700) -> bool:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=(timeout_ms/1000.0 + 1.0),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         return p.returncode == 0
     except Exception:
@@ -118,10 +101,6 @@ class ConnectionMonitor:
     def _run(self):
         """Main monitor loop with watchdog and proper state transitions."""
         while not self._stop.is_set():
-            # Briefly show CHECKING (YELLOW)
-            if self._last_state != ConnectionState.CHECKING:
-                self._set_ui_state_checking()
-            
             # Probe connection (fresh state every cycle)
             ok = self._probe()
             now = time.monotonic()
@@ -160,13 +139,6 @@ class ConnectionMonitor:
                 if self.debug_monitor and self._last_state != ConnectionState.DISCONNECTED:
                     if hasattr(self.ui, 'log_service'):
                         self.ui.log_service.log("No UP interface on 10.0.0.0/24", "WARNING")
-                return False
-            
-            # Step 2: Windows-specific connection state check (verbose)
-            if not _win_is_connected(ifname):
-                if self.debug_monitor and self._last_state != ConnectionState.DISCONNECTED:
-                    if hasattr(self.ui, 'log_service'):
-                        self.ui.log_service.log(f"Interface '{ifname}' is not Connected", "WARNING", verbose=True)
                 return False
             
             # Log interface success only on state change (verbose)
@@ -216,16 +188,19 @@ class ConnectionMonitor:
                 cmd = ["ping", "-n", "1", "-w", str(timeout_ms), host]
             else:
                 cmd = ["ping", "-c", "1", "-W", str(int(timeout_ms/1000)), host]
-            result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=(
+                    getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    if platform.system().lower() == "windows"
+                    else 0
+                ),
+            )
             return result.returncode == 0
         except Exception:
             return False
-    
-    def _set_ui_state_checking(self):
-        """Set UI to CHECKING state (brief, no log)."""
-        if hasattr(self.ui, 'set_connection_state'):
-            from ui_refactor import ConnState
-            self.ui.set_connection_state(ConnState.CONNECTING, "Checking…")
     
     def _set_state_connected(self):
         """Set state to CONNECTED with logging on change."""

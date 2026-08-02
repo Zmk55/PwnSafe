@@ -112,7 +112,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pwnsafe"
-version = "1.0.0"
+version = "1.4.0"
 description = "A Python-based GUI utility for backup and restore operations on remote systems"
 readme = "README.md"
 requires-python = ">=3.9"

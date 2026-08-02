@@ -4,13 +4,15 @@ Professional, compact desktop utility interface for PwnSafe.
 """
 
 import customtkinter as ctk
-from tkinter import filedialog, messagebox
+from tkinter import Text, filedialog, messagebox, simpledialog
 import os
 import platform
 import queue
 import datetime
+import re
+import threading
 from enum import Enum, auto
-from ui_components import CollapsibleSection, StatusBar, ToastNotification, CompactLogViewer
+from ui_components import ToastNotification
 from profile_manager import ProfileManager
 
 
@@ -101,15 +103,29 @@ class PwnSafeCompactUI(ctk.CTk):
         
         # Connection state tracking
         self._conn_state = ConnState.UNKNOWN
+        self._device_inspection_key = None
+        self._device_inspection_running = False
+        self._sharing_busy = False
+        self._active_auth_method = "password"
+        self._password_cache = ""
+        self._key_passphrase_cache = ""
+        self._terminal_client = None
+        self._terminal_channel = None
+        self._terminal_connecting = False
+        self._terminal_stop = threading.Event()
         
         # Monitor state variables
         self.live_monitor_var = ctk.BooleanVar(value=True)
         self.live_interval_var = ctk.IntVar(value=2)
+        self.auto_detect_var = ctk.BooleanVar(value=True)
+        self.verbose_logging_var = ctk.BooleanVar(value=False)
+        self.network_adapter_var = ctk.StringVar(value="Auto-detect")
+        self.dns_primary_var = ctk.StringVar(value="")
+        self.dns_secondary_var = ctk.StringVar(value="")
         self.monitor = None
         
         # Last used directory for backup/restore
-        from pathlib import Path
-        self._last_backup_dir = Path.home()
+        self._last_backup_dir = os.path.expanduser("~")
         
         # Initialize StringVars for all input fields
         self.host_var = ctk.StringVar(value="10.0.0.2")
@@ -136,7 +152,7 @@ class PwnSafeCompactUI(ctk.CTk):
     
     def _setup_window(self):
         """Setup window properties and geometry."""
-        self.title("PwnSafe v1.0.0")
+        self.title("PwnSafe v1.4.0")
         self.geometry("900x700")
         self.minsize(800, 600)
         
@@ -177,9 +193,7 @@ class PwnSafeCompactUI(ctk.CTk):
         self.main_frame.grid_rowconfigure(0, weight=0)  # header
         self.main_frame.grid_rowconfigure(1, weight=0)  # profile
         self.main_frame.grid_rowconfigure(2, weight=0)  # connection
-        self.main_frame.grid_rowconfigure(3, weight=0)  # primary buttons
-        self.main_frame.grid_rowconfigure(4, weight=0)  # advanced settings
-        self.main_frame.grid_rowconfigure(5, weight=1, minsize=100)  # SYSTEM LOG expands
+        self.main_frame.grid_rowconfigure(3, weight=1, minsize=100)  # SYSTEM LOG expands
         
         # 1. Header Section (60px fixed)
         self._create_header()
@@ -190,11 +204,8 @@ class PwnSafeCompactUI(ctk.CTk):
         # 3. Connection Section (80px fixed when collapsed)
         self._create_connection_section()
         
-        # 4. Advanced Settings (CollapsibleSection)
-        self._create_advanced_settings()
-        
-        # 7. System Log (CollapsibleSection)
-        self._create_system_log()
+        # 4. System Log and embedded terminal
+        self._create_bottom_tabs()
         
         # Initialize toast notification system
         self.toast = ToastNotification(self)
@@ -227,7 +238,7 @@ class PwnSafeCompactUI(ctk.CTk):
         self.log_service.log("Ready for operations.", "SUCCESS")
     
     def _create_header(self):
-        """Create header section with title and status bar."""
+        """Create the title and prominent connected-device hostname."""
         # Header frame
         self.header_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         self.header_frame.grid(row=0, column=0, sticky="ew", pady=(0, self.UNIT))
@@ -236,15 +247,19 @@ class PwnSafeCompactUI(ctk.CTk):
         # Title
         self.title_label = ctk.CTkLabel(
             self.header_frame,
-            text="PwnSafe v1.0.0",
+            text="PwnSafe v1.4.0",
             font=ctk.CTkFont(size=18, weight="bold"),
             text_color=self.colors['primary']
         )
         self.title_label.grid(row=0, column=0)
         
-        # Status bar
-        self.status_bar = StatusBar(self.header_frame)
-        self.status_bar.grid(row=1, column=0, sticky="ew", pady=(self.UNIT, 0))
+        self.hostname_label = ctk.CTkLabel(
+            self.header_frame,
+            text="Device hostname: Waiting for connection",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=self.colors['muted'],
+        )
+        self.hostname_label.grid(row=1, column=0, pady=(2, 0))
     
     def _create_profile_section(self):
         """Create profile selection section."""
@@ -371,18 +386,51 @@ class PwnSafeCompactUI(ctk.CTk):
             height=self.ENTRY_HEIGHT
         )
         self.credential_entry.grid(row=1, column=2, padx=(0, self.UNIT), pady=self.UNIT, sticky="ew")
-        
-        # Browse button for SSH key
-        self.browse_key_button = ctk.CTkButton(
+
+        self.key_path_label = ctk.CTkLabel(
             connection_grid,
-            text="Browse",
-            width=60,
-            height=self.ENTRY_HEIGHT,
-            font=ctk.CTkFont(size=11),
-            command=self._browse_ssh_key,
-            state="disabled"
+            text="Key will be configured automatically",
+            font=ctk.CTkFont(size=10),
+            text_color=self.colors['muted'],
+            anchor="w",
         )
-        self.browse_key_button.grid(row=1, column=3, padx=0, pady=self.UNIT)
+        self.key_path_label.grid(row=1, column=2, padx=(0, self.UNIT), pady=self.UNIT, sticky="ew")
+        self.key_path_label.grid_remove()
+
+        terminal_buttons = ctk.CTkFrame(connection_grid, fg_color="transparent")
+        terminal_buttons.grid(row=1, column=3, padx=0, pady=self.UNIT, sticky="e")
+
+        self.ssh_button = ctk.CTkButton(
+            terminal_buttons,
+            text="SSH",
+            width=64,
+            height=self.ENTRY_HEIGHT,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            command=self._on_ssh_click,
+            state="disabled",
+        )
+        self.ssh_button.pack(side="left", padx=(0, 6))
+
+        self.sftp_button = ctk.CTkButton(
+            terminal_buttons,
+            text="SFTP",
+            width=64,
+            height=self.ENTRY_HEIGHT,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            command=self._on_sftp_click,
+        )
+        self.sftp_button.pack(side="left")
+
+        self.internet_sharing_button = ctk.CTkButton(
+            terminal_buttons,
+            text="Share Internet",
+            width=105,
+            height=self.ENTRY_HEIGHT,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            command=self._on_internet_sharing_click,
+            state="disabled",
+        )
+        self.internet_sharing_button.pack(side="left", padx=(6, 0))
         
         # SSH key path entry (hidden initially)
         self.ssh_key_path = ""
@@ -417,135 +465,22 @@ class PwnSafeCompactUI(ctk.CTk):
             state="disabled"
         )
         self.restore_button.grid(row=1, column=4, rowspan=1, padx=(16, 0), pady=(4, self.UNIT), sticky="new")
-    
-    
-    
-    def _create_advanced_settings(self):
-        """Create advanced settings collapsible section."""
-        self.advanced_section = CollapsibleSection(
-            self.main_frame,
-            "ADVANCED SETTINGS",
-            is_expanded=False
-        )
-        self.advanced_section.grid(row=4, column=0, sticky="nsew", pady=(0, self.UNIT))
-        
-        # Auto-detect toggle
-        self.auto_detect_var = ctk.BooleanVar(value=True)
-        self.auto_detect_checkbox = ctk.CTkCheckBox(
-            self.advanced_section.content_frame,
-            text="Auto-detect Pwnagotchi (Windows)",
-            variable=self.auto_detect_var,
-            command=self._on_auto_detect_changed
-        )
-        self.advanced_section.add_widget(self.auto_detect_checkbox, pady=self.UNIT)
-        
-        # Network adapter dropdown (only shown when auto-detect is on)
-        self.network_adapter_frame = ctk.CTkFrame(self.advanced_section.content_frame, fg_color="transparent")
-        self.advanced_section.add_widget(self.network_adapter_frame, pady=self.UNIT)
-        
-        adapter_label = ctk.CTkLabel(
-            self.network_adapter_frame,
-            text="Network Adapter:",
-            font=ctk.CTkFont(size=11),
-            text_color=self.colors['text']
-        )
-        adapter_label.pack(side="left", padx=(0, self.UNIT))
-        
-        self.network_adapter_dropdown = ctk.CTkComboBox(
-            self.network_adapter_frame,
-            values=["Auto-detect"],
-            font=ctk.CTkFont(size=11),
-            height=self.ENTRY_HEIGHT
-        )
-        self.network_adapter_dropdown.pack(side="left")
-        
-        # DNS settings
-        dns_frame = ctk.CTkFrame(self.advanced_section.content_frame, fg_color="transparent")
-        self.advanced_section.add_widget(dns_frame, pady=self.UNIT)
-        
-        dns_label = ctk.CTkLabel(
-            dns_frame,
-            text="DNS:",
-            font=ctk.CTkFont(size=11),
-            text_color=self.colors['text']
-        )
-        dns_label.pack(side="left", padx=(0, self.UNIT))
-        
-        self.dns_primary_entry = ctk.CTkEntry(
-            dns_frame,
-            placeholder_text="Primary DNS",
-            font=ctk.CTkFont(size=11),
-            height=self.ENTRY_HEIGHT,
-            width=120
-        )
-        self.dns_primary_entry.pack(side="left", padx=(0, self.UNIT))
-        
-        self.dns_secondary_entry = ctk.CTkEntry(
-            dns_frame,
-            placeholder_text="Secondary DNS",
-            font=ctk.CTkFont(size=11),
-            height=self.ENTRY_HEIGHT,
-            width=120
-        )
-        self.dns_secondary_entry.pack(side="left")
-        
-        # Live monitoring settings
-        monitor_frame = ctk.CTkFrame(self.advanced_section.content_frame, fg_color="transparent")
-        self.advanced_section.add_widget(monitor_frame, pady=self.UNIT)
 
-        self.live_monitor_checkbox = ctk.CTkCheckBox(
-            monitor_frame,
-            text="Live monitoring",
-            variable=self.live_monitor_var,
-            command=self._on_live_monitor_changed
-        )
-        self.live_monitor_checkbox.pack(side="left", padx=(0, self.UNIT))
-        
-        # Verbose logging checkbox
-        self.verbose_logging_var = ctk.BooleanVar(value=False)
-        self.verbose_logging_checkbox = ctk.CTkCheckBox(
-            monitor_frame,
-            text="Verbose logging (show diagnostic details)",
-            variable=self.verbose_logging_var,
-            command=self._on_verbose_logging_changed
-        )
-        self.verbose_logging_checkbox.pack(side="left", padx=(0, self.UNIT))
-
-        interval_label = ctk.CTkLabel(
-            monitor_frame,
-            text="Interval (s):",
-            font=ctk.CTkFont(size=11),
-            text_color=self.colors['text']
-        )
-        interval_label.pack(side="left", padx=(self.UNIT, self.UNIT//2))
-
-        self.interval_spinbox = ctk.CTkEntry(
-            monitor_frame,
-            textvariable=self.live_interval_var,
-            font=ctk.CTkFont(size=11),
-            height=self.ENTRY_HEIGHT,
-            width=50
-        )
-        self.interval_spinbox.pack(side="left")
-        self.interval_spinbox.bind("<FocusOut>", self._on_interval_changed)
+        for value in (self.host_var, self.user_var, self.password_var):
+            value.trace_add("write", self._on_connection_values_changed)
     
-    def _create_system_log(self):
-        """Create system log section using CollapsibleSection."""
-        # Create collapsible section (starts expanded)
-        self.log_section = CollapsibleSection(
-            self.main_frame,
-            "SYSTEM LOG",
-            is_expanded=True
-        )
-        self.log_section.grid(row=5, column=0, sticky="nsew", pady=(0, self.UNIT))
-        
-        # Configure content frame for proper stretching
-        self.log_section.content_frame.grid_rowconfigure(0, weight=0)  # controls row
-        self.log_section.content_frame.grid_rowconfigure(1, weight=1)  # log text row
-        self.log_section.content_frame.grid_columnconfigure(0, weight=1)
+    def _create_bottom_tabs(self):
+        """Create the tabbed System Log and embedded Terminal pane."""
+        self.bottom_tabs = ctk.CTkTabview(self.main_frame)
+        self.bottom_tabs.grid(row=3, column=0, sticky="nsew", pady=(0, self.UNIT))
+        self.log_tab = self.bottom_tabs.add("System Log")
+        self.terminal_tab = self.bottom_tabs.add("Terminal")
+
+        self.log_tab.grid_rowconfigure(1, weight=1)
+        self.log_tab.grid_columnconfigure(0, weight=1)
         
         # Control buttons (top-right)
-        controls_frame = ctk.CTkFrame(self.log_section.content_frame, fg_color="transparent")
+        controls_frame = ctk.CTkFrame(self.log_tab, fg_color="transparent")
         controls_frame.grid(row=0, column=0, sticky="e", pady=(0, 6))
         
         self.log_clear_btn = ctk.CTkButton(
@@ -568,10 +503,8 @@ class PwnSafeCompactUI(ctk.CTk):
         )
         self.log_copy_btn.pack(side="left")
         
-        # Text widget for logs
-        from tkinter import Text
         self.log_text = Text(
-            self.log_section.content_frame,
+            self.log_tab,
             font=("Consolas", 10),
             bg="#1a1a1a",
             fg="#E6E6E6",
@@ -591,6 +524,68 @@ class PwnSafeCompactUI(ctk.CTk):
         self.log_text.tag_configure("error", foreground="#ff0000")
         self.log_text.tag_configure("system", foreground="#ff6600")
         self.log_text.tag_configure("info", foreground="#00ff00")
+
+        self._create_terminal_tab()
+
+    def _create_terminal_tab(self):
+        """Create the embedded interactive SSH terminal widgets."""
+        self.terminal_tab.grid_rowconfigure(1, weight=1)
+        self.terminal_tab.grid_columnconfigure(0, weight=1)
+
+        terminal_controls = ctk.CTkFrame(self.terminal_tab, fg_color="transparent")
+        terminal_controls.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        terminal_controls.grid_columnconfigure(0, weight=1)
+
+        self.terminal_status_label = ctk.CTkLabel(
+            terminal_controls,
+            text="Disconnected — click SSH to connect",
+            font=ctk.CTkFont(size=11),
+            text_color=self.colors['muted'],
+            anchor="w",
+        )
+        self.terminal_status_label.grid(row=0, column=0, sticky="ew")
+
+        self.terminal_clear_button = ctk.CTkButton(
+            terminal_controls,
+            text="Clear",
+            width=70,
+            height=24,
+            font=ctk.CTkFont(size=10),
+            command=self._clear_terminal,
+        )
+        self.terminal_clear_button.grid(row=0, column=1, padx=(6, 0))
+
+        self.terminal_disconnect_button = ctk.CTkButton(
+            terminal_controls,
+            text="Disconnect",
+            width=90,
+            height=24,
+            font=ctk.CTkFont(size=10),
+            command=self._disconnect_terminal,
+            state="disabled",
+        )
+        self.terminal_disconnect_button.grid(row=0, column=2, padx=(6, 0))
+
+        self.terminal_text = Text(
+            self.terminal_tab,
+            font=("Consolas", 10),
+            bg="#111111",
+            fg="#E6E6E6",
+            insertbackground="#ffffff",
+            selectbackground="#333333",
+            selectforeground="#ffffff",
+            relief="flat",
+            borderwidth=0,
+            wrap="word",
+            state="disabled",
+            takefocus=True,
+        )
+        self.terminal_text.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+        self.terminal_text.bind("<KeyPress>", self._send_terminal_key)
+        self.terminal_text.bind("<Control-v>", self._paste_terminal)
+        self._append_terminal(
+            "Click SSH to connect, then click here and type directly into the remote shell.\n"
+        )
     
     def _append_log_line(self, msg_data):
         """Append a log line to the text widget (called from main thread only)."""
@@ -680,21 +675,20 @@ class PwnSafeCompactUI(ctk.CTk):
             self.ssh_key_path = profile.get("ssh_key_path", "")
             self.credential_entry.delete(0, "end")
             self.credential_entry.insert(0, profile.get("ssh_key_passphrase", ""))
+            self._update_key_path_label()
         
-        # Advanced settings
+        # Persisted background settings (no longer exposed in the compact UI)
         self.auto_detect_var.set(profile.get("auto_detect", True))
         self.live_monitor_var.set(profile.get("live_monitor", True))
         self.live_interval_var.set(profile.get("monitor_interval", 2))
-        self.dns_primary_entry.delete(0, "end")
-        self.dns_primary_entry.insert(0, profile.get("dns_primary", ""))
-        self.dns_secondary_entry.delete(0, "end")
-        self.dns_secondary_entry.insert(0, profile.get("dns_secondary", ""))
+        self.dns_primary_var.set(profile.get("dns_primary", ""))
+        self.dns_secondary_var.set(profile.get("dns_secondary", ""))
+        self.network_adapter_var.set(profile.get("network_adapter", "Auto-detect"))
         
         # Load last backup directory
         last_dir = profile.get("last_backup_dir", "")
         if last_dir:
-            from pathlib import Path
-            self._last_backup_dir = Path(last_dir)
+            self._last_backup_dir = os.path.abspath(last_dir)
         
         self.current_profile = profile_name
     
@@ -705,44 +699,473 @@ class PwnSafeCompactUI(ctk.CTk):
     
     def _on_auth_method_changed(self, auth_method):
         """Handle authentication method change."""
-        if auth_method == "SSH Key":
-            self.credential_entry.configure(placeholder_text="SSH Key Passphrase", show="")
-            self.browse_key_button.configure(state="normal")
+        current_secret = self.password_var.get()
+        if self._active_auth_method == "ssh_key":
+            self._key_passphrase_cache = current_secret
         else:
+            self._password_cache = current_secret
+
+        new_method = "ssh_key" if auth_method in ("SSH Key", "ssh_key") else "password"
+        self._active_auth_method = new_method
+        if new_method == "ssh_key":
+            self.credential_entry.grid_remove()
+            self.key_path_label.grid()
+            self.password_var.set(self._key_passphrase_cache)
+            self._update_key_path_label()
+        else:
+            self.key_path_label.grid_remove()
+            self.credential_entry.grid()
             self.credential_entry.configure(placeholder_text="Password", show="*")
-            self.browse_key_button.configure(state="disabled")
+            self.password_var.set(self._password_cache)
+        self._device_inspection_key = None
+        self._update_action_buttons()
+        self._maybe_start_device_inspection()
     
-    def _browse_ssh_key(self):
-        """Browse for SSH key file."""
-        filename = filedialog.askopenfilename(
-            title="Select SSH Key",
-            filetypes=[
-                ("SSH Keys", "*.pem *.key"),
-                ("OpenSSH Keys", "id_rsa id_ed25519"),
-                ("All Files", "*.*")
-            ]
-        )
-        if filename:
-            self.ssh_key_path = filename
-            self.toast.show_toast(f"SSH key selected: {os.path.basename(filename)}", "success")
-    
-    
-    def _on_auto_detect_changed(self):
-        """Handle auto-detect toggle change."""
-        if self.auto_detect_var.get():
-            # Enable network adapter dropdown
-            self.network_adapter_dropdown.configure(state="normal")
+    def _update_key_path_label(self):
+        """Show the configured key or explain that the wizard will create it."""
+        if self.ssh_key_path:
+            text = f"Key: {os.path.basename(self.ssh_key_path)}"
         else:
-            # Disable network adapter dropdown
-            self.network_adapter_dropdown.configure(state="disabled")
+            text = "Key will be configured automatically"
+        self.key_path_label.configure(text=text)
+
+    def _on_connection_values_changed(self, *_args):
+        """Refresh actions and device details when connection input changes."""
+        if self._active_auth_method == "ssh_key":
+            self._key_passphrase_cache = self.password_var.get()
+        else:
+            self._password_cache = self.password_var.get()
+        self._device_inspection_key = None
+        self._update_action_buttons()
+        self._maybe_start_device_inspection()
+
+    def _credentials_ready(self, options=None):
+        """Return whether the active authentication method has usable input."""
+        options = options or self.get_connection_options()
+        if not options["host"] or not options["username"]:
+            return False
+        if options["auth_method"] == "ssh_key":
+            return bool(options["ssh_key_path"] and os.path.isfile(options["ssh_key_path"]))
+        return bool(options["password"])
+
+    def _update_action_buttons(self):
+        """Enable connected actions only when their required input is present."""
+        if not hasattr(self, "backup_button"):
+            return
+        try:
+            options = self.get_connection_options()
+            connected = self._conn_state == ConnState.CONNECTED
+            operation_state = "normal" if connected and self._credentials_ready(options) else "disabled"
+            self.backup_button.configure(state=operation_state)
+            self.restore_button.configure(state=operation_state)
+            self.ssh_button.configure(
+                state=(
+                    "normal"
+                    if connected and options["host"] and options["username"]
+                    and not self._terminal_connecting
+                    else "disabled"
+                )
+            )
+            sharing_ready = (
+                platform.system() == "Windows"
+                and not self._sharing_busy
+            )
+            self.internet_sharing_button.configure(
+                state="normal" if sharing_ready else "disabled"
+            )
+        except Exception as error:
+            if hasattr(self, "log_service"):
+                self.log_service.log(f"Could not update action buttons: {error}", "WARNING")
+
+    def _on_ssh_click(self):
+        """Open an embedded Paramiko shell using the active credentials."""
+        try:
+            options = self.get_connection_options()
+            if not options["host"] or not options["username"]:
+                self.show_toast("Enter the host and username first", "error")
+                return
+            if options["auth_method"] == "password" and not options["password"]:
+                self.show_toast("Enter valid SSH credentials first", "error")
+                return
+            if self._terminal_connecting:
+                return
+
+            self._disconnect_terminal(silent=True)
+            self._terminal_connecting = True
+            self.ssh_button.configure(text="Connecting…", state="disabled")
+            self.terminal_status_label.configure(
+                text=f'Connecting to {options["username"]}@{options["host"]}…',
+                text_color=self.colors['warning'],
+            )
+            self.bottom_tabs.set("Terminal")
+            self._append_terminal(
+                f'\nConnecting to {options["username"]}@{options["host"]}…\n'
+            )
+            threading.Thread(
+                target=self._terminal_connect_worker,
+                args=(options,),
+                daemon=True,
+            ).start()
+        except Exception as error:
+            self._terminal_connecting = False
+            self._update_action_buttons()
+            self.log_service.log(f"Could not start SSH terminal: {error}", "ERROR")
+            self.show_toast(f"Could not start SSH terminal: {error}", "error")
+
+    def _terminal_connect_worker(self, options):
+        """Authenticate, run the key wizard when needed, and open a PTY shell."""
+        client = None
+        generated_key_path = ""
+        try:
+            key_missing = (
+                options["auth_method"] == "ssh_key"
+                and not os.path.isfile(options["ssh_key_path"])
+            )
+            if not key_missing:
+                client = self.app.ssh_connect(**options)
+
+            if options["auth_method"] == "ssh_key" and not client:
+                setup_password = self._request_key_setup_password()
+                if setup_password is None:
+                    raise RuntimeError("SSH key setup was cancelled")
+                if not hasattr(self.app, "setup_ssh_key"):
+                    raise RuntimeError("SSH key setup is unavailable")
+                generated_key_path = self.app.setup_ssh_key(
+                    options["host"],
+                    options["username"],
+                    setup_password,
+                    options["ssh_key_path"],
+                )
+                options = dict(options)
+                options.update(
+                    ssh_key_path=generated_key_path,
+                    ssh_key_passphrase="",
+                    password="",
+                )
+                client = self.app.ssh_connect(**options)
+
+            if not client:
+                raise ConnectionError("SSH authentication failed")
+            transport = client.get_transport()
+            if transport:
+                transport.set_keepalive(30)
+            channel = client.invoke_shell(term="xterm", width=120, height=36)
+            self.after(
+                0,
+                lambda: self._terminal_connected(
+                    client, channel, options, generated_key_path
+                ),
+            )
+        except Exception as error:
+            if client:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+            message = str(error)
+            self.after(0, lambda: self._terminal_connection_failed(message))
+
+    def _request_key_setup_password(self):
+        """Prompt once on the Tk thread for the password needed to install a key."""
+        result = []
+        completed = threading.Event()
+
+        def prompt():
+            try:
+                result.append(
+                    simpledialog.askstring(
+                        "Set Up SSH Key",
+                        "The selected SSH key is missing or invalid.\n\n"
+                        "Enter the Pwnagotchi password once. PwnSafe will generate "
+                        "a local key and install its public key automatically.",
+                        show="*",
+                        parent=self,
+                    )
+                )
+            finally:
+                completed.set()
+
+        self.after(0, prompt)
+        completed.wait()
+        return result[0] if result else None
+
+    def _terminal_connected(self, client, channel, options, generated_key_path):
+        """Activate a newly authenticated embedded shell on the Tk thread."""
+        self._terminal_client = client
+        self._terminal_channel = channel
+        self._terminal_connecting = False
+        self._terminal_stop.clear()
+        self.ssh_button.configure(text="SSH")
+        self._update_action_buttons()
+        self.terminal_disconnect_button.configure(state="normal")
+        self.terminal_status_label.configure(
+            text=f'Connected to {options["username"]}@{options["host"]}',
+            text_color=self.colors['primary'],
+        )
+        if generated_key_path:
+            self.ssh_key_path = os.path.abspath(generated_key_path)
+            self._key_passphrase_cache = ""
+            self.password_var.set("")
+            self._update_key_path_label()
+            if self.current_profile:
+                self._save_profile_data(self.current_profile)
+            self.log_service.log(
+                f"SSH key configured and saved: {self.ssh_key_path}", "SUCCESS"
+            )
+        self.log_service.log("Embedded SSH terminal connected", "SUCCESS")
+        self.terminal_text.focus_set()
+        threading.Thread(
+            target=self._terminal_reader,
+            args=(channel,),
+            daemon=True,
+        ).start()
+
+    def _terminal_connection_failed(self, message):
+        """Restore terminal controls after authentication or shell setup fails."""
+        self._terminal_connecting = False
+        self.ssh_button.configure(text="SSH")
+        self._update_action_buttons()
+        self.terminal_status_label.configure(
+            text="Connection failed",
+            text_color=self.colors['danger'],
+        )
+        self._append_terminal(f"Connection failed: {message}\n")
+        self.show_toast(f"SSH terminal failed: {message}", "error")
+
+    def _terminal_reader(self, channel):
+        """Forward remote PTY output to the Tk terminal until the channel closes."""
+        try:
+            while not self._terminal_stop.wait(0.05):
+                if channel.recv_ready():
+                    data = channel.recv(4096)
+                    if not data:
+                        break
+                    output = data.decode("utf-8", errors="replace")
+                    self.after(0, lambda text=output: self._append_terminal(text))
+                elif channel.closed or channel.exit_status_ready():
+                    break
+        except Exception as error:
+            message = str(error)
+            self.after(0, lambda: self._append_terminal(f"\nTerminal error: {message}\n"))
+        finally:
+            self.after(0, lambda: self._terminal_session_closed(channel))
+
+    def _terminal_session_closed(self, channel):
+        """Mark a remotely closed session without disturbing a newer channel."""
+        if channel is not self._terminal_channel:
+            return
+        self._disconnect_terminal(silent=True)
+        self._append_terminal("\nSSH session closed.\n")
+
+    def _disconnect_terminal(self, silent=False):
+        """Close the current Paramiko channel/client and reset terminal controls."""
+        self._terminal_stop.set()
+        channel, client = self._terminal_channel, self._terminal_client
+        self._terminal_channel = None
+        self._terminal_client = None
+        for connection in (channel, client):
+            if connection:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+        if hasattr(self, "terminal_text"):
+            self.terminal_disconnect_button.configure(state="disabled")
+            self.terminal_status_label.configure(
+                text="Disconnected — click SSH to connect",
+                text_color=self.colors['muted'],
+            )
+        if not silent:
+            self._append_terminal("\nDisconnected.\n")
+
+    def _append_terminal(self, text):
+        """Append decoded shell output while removing unsupported ANSI controls."""
+        clean_text = re.sub(r"\x1b\][^\x07]*(?:\x07|\x1b\\)", "", text)
+        clean_text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", clean_text).replace("\r", "")
+        self.terminal_text.configure(state="normal")
+        self.terminal_text.insert("end", clean_text)
+        self.terminal_text.see("end")
+        self.terminal_text.configure(state="disabled")
+
+    def _clear_terminal(self):
+        """Clear embedded terminal output."""
+        self.terminal_text.configure(state="normal")
+        self.terminal_text.delete("1.0", "end")
+        self.terminal_text.configure(state="disabled")
+
+    def _send_terminal_key(self, event):
+        """Forward printable and control keys directly to the remote PTY."""
+        if not self._terminal_channel or self._terminal_channel.closed:
+            self.show_toast("SSH terminal is not connected", "error")
+            return "break"
+
+        special_keys = {
+            "Return": "\r",
+            "BackSpace": "\x7f",
+            "Tab": "\t",
+            "Escape": "\x1b",
+            "Up": "\x1b[A",
+            "Down": "\x1b[B",
+            "Right": "\x1b[C",
+            "Left": "\x1b[D",
+            "Home": "\x1b[H",
+            "End": "\x1b[F",
+            "Delete": "\x1b[3~",
+            "Prior": "\x1b[5~",
+            "Next": "\x1b[6~",
+        }
+        data = special_keys.get(event.keysym, "")
+        if event.state & 0x4 and len(event.keysym) == 1 and event.keysym.isalpha():
+            data = chr(ord(event.keysym.lower()) - ord("a") + 1)
+        elif not data and event.char and event.char.isprintable():
+            data = event.char
+        if not data:
+            return "break"
+        try:
+            self._terminal_channel.send(data)
+        except Exception as error:
+            self._append_terminal(f"\nCould not send input: {error}\n")
+        return "break"
+
+    def _paste_terminal(self, _event=None):
+        """Paste clipboard text into the remote PTY."""
+        if self._terminal_channel and not self._terminal_channel.closed:
+            try:
+                self._terminal_channel.send(self.clipboard_get())
+            except Exception as error:
+                self._append_terminal(f"\nCould not paste: {error}\n")
+        return "break"
+
+    def _on_sftp_click(self):
+        """Expose the planned SFTP control without pretending it is implemented."""
+        self.log_service.log("SFTP interface is not implemented yet.", "INFO")
+        self.show_toast("SFTP interface coming soon", "info")
+
+    def _on_internet_sharing_click(self):
+        """Enable Windows ICS without blocking the Tk event loop."""
+        try:
+            options = self.get_connection_options()
+            if platform.system() != "Windows":
+                self.show_toast("Internet Sharing setup is only available on Windows", "error")
+                return
+            if not hasattr(self.app, "setup_internet_sharing_windows"):
+                raise RuntimeError("Internet Sharing setup is unavailable")
+
+            self._sharing_busy = True
+            self.internet_sharing_button.configure(text="Enabling…", state="disabled")
+            self.log_service.log("Starting Windows Internet Sharing setup...", "SYSTEM")
+            threading.Thread(
+                target=self._internet_sharing_worker,
+                args=(options,),
+                daemon=True,
+            ).start()
+        except Exception as error:
+            self._sharing_busy = False
+            self._update_action_buttons()
+            self.log_service.log(f"Could not start Internet Sharing: {error}", "ERROR")
+            self.show_toast(f"Could not start Internet Sharing: {error}", "error")
+
+    def _internet_sharing_worker(self, options):
+        """Run the elevated backend operation and return its result to Tk."""
+        success = False
+        try:
+            success = bool(self.app.setup_internet_sharing_windows(**options))
+        except Exception as error:
+            self.log_message(f"Internet Sharing failed: {error}", "ERROR")
+        finally:
+            self.after(0, lambda: self._finish_internet_sharing(success))
+
+    def _finish_internet_sharing(self, success):
+        """Restore the sharing button and notify the user."""
+        self._sharing_busy = False
+        self.internet_sharing_button.configure(text="Share Internet")
+        self._update_action_buttons()
+        if success:
+            self.show_toast("Internet Sharing enabled", "success")
+            self._device_inspection_key = None
+            self._maybe_start_device_inspection()
+        else:
+            self.show_toast("Internet Sharing failed; check the System Log", "error")
+
+    def _connection_fingerprint(self, options):
+        """Identify the current target/authentication inputs for one inspection."""
+        secret = options["ssh_key_passphrase"] if options["auth_method"] == "ssh_key" else options["password"]
+        return (
+            options["host"], options["username"], options["auth_method"],
+            options["ssh_key_path"], secret,
+        )
+
+    def _maybe_start_device_inspection(self):
+        """Query hostname and sharing once per connected credential set."""
+        if self._conn_state != ConnState.CONNECTED or self._device_inspection_running:
+            return
+        try:
+            options = self.get_connection_options()
+            if not self._credentials_ready(options):
+                self.hostname_label.configure(
+                    text="Device hostname: Enter SSH credentials",
+                    text_color=self.colors['warning'],
+                )
+                return
+            fingerprint = self._connection_fingerprint(options)
+            if fingerprint == self._device_inspection_key:
+                return
+            self._device_inspection_key = fingerprint
+            self._device_inspection_running = True
+            self.hostname_label.configure(
+                text="Device hostname: Identifying…",
+                text_color=self.colors['warning'],
+            )
+            threading.Thread(
+                target=self._inspect_device_worker,
+                args=(options, fingerprint),
+                daemon=True,
+            ).start()
+        except Exception as error:
+            self.log_service.log(f"Could not start device inspection: {error}", "WARNING")
+
+    def _inspect_device_worker(self, options, fingerprint):
+        """Run the backend device checks away from the Tk thread."""
+        result = {}
+        try:
+            if not hasattr(self.app, "inspect_device_connection"):
+                raise RuntimeError("Device inspection is unavailable")
+            result = self.app.inspect_device_connection(**options) or {}
+        except Exception as error:
+            self.log_message(f"Device inspection failed: {error}", "WARNING")
+        finally:
+            self.after(0, lambda: self._finish_device_inspection(result, fingerprint))
+
+    def _finish_device_inspection(self, result, fingerprint):
+        """Apply an inspection result only if the connection inputs still match."""
+        self._device_inspection_running = False
+        try:
+            current_options = self.get_connection_options()
+            if fingerprint != self._connection_fingerprint(current_options):
+                self._device_inspection_key = None
+                self._maybe_start_device_inspection()
+                return
+            hostname = str(result.get("hostname", "")).strip()
+            if hostname:
+                self.hostname_label.configure(
+                    text=f"Device hostname: {hostname}",
+                    text_color=self.colors['primary'],
+                )
+            else:
+                self.hostname_label.configure(
+                    text=f'Device hostname: unavailable ({current_options["host"]})',
+                    text_color=self.colors['warning'],
+                )
+        except Exception as error:
+            self.log_service.log(f"Could not display device hostname: {error}", "WARNING")
     
     def _on_enter_pressed(self, event):
         """Handle Enter key press."""
         # If focus is in connection/backup sections, trigger backup
         focused_widget = self.focus_get()
-        if focused_widget in [self.host_entry, self.user_entry, self.credential_entry, self.file_entry]:
+        if focused_widget in [self.host_entry, self.user_entry, self.credential_entry]:
             if self._validate_inputs():
-                self._start_backup()
+                self._on_backup_click()
     
     def _on_escape_pressed(self, event):
         """Handle Escape key press."""
@@ -777,12 +1200,12 @@ class PwnSafeCompactUI(ctk.CTk):
             "ssh_key_path": self.ssh_key_path,
             "ssh_key_passphrase": self.credential_entry.get() if self.auth_dropdown.get() == "SSH Key" else "",
             "use_ssh_agent": False,  # TODO: Add checkbox for this
-            "dns_primary": self.dns_primary_entry.get(),
-            "dns_secondary": self.dns_secondary_entry.get(),
+            "dns_primary": self.dns_primary_var.get(),
+            "dns_secondary": self.dns_secondary_var.get(),
             "auto_detect": self.auto_detect_var.get(),
             "live_monitor": self.live_monitor_var.get(),
             "monitor_interval": self.live_interval_var.get(),
-            "network_adapter": self.network_adapter_dropdown.get(),
+            "network_adapter": self.network_adapter_var.get(),
             "last_backup_dir": str(self._last_backup_dir)
         }
         
@@ -790,6 +1213,8 @@ class PwnSafeCompactUI(ctk.CTk):
     
     def _on_closing(self):
         """Handle window closing."""
+        self._disconnect_terminal(silent=True)
+
         # Stop monitor
         if hasattr(self, 'monitor') and self.monitor:
             self.monitor.stop()
@@ -815,12 +1240,39 @@ class PwnSafeCompactUI(ctk.CTk):
         self.log_service.log(message, level, verbose)
     
     def update_status(self, text, level="info"):
-        """Update the status bar."""
-        self.status_bar.update_status(text, level)
+        """Retain legacy status updates without recreating the removed status bar."""
+        self._status_text = text
     
     def show_toast(self, message, toast_type="info"):
-        """Show a toast notification."""
-        self.toast.show_toast(message, toast_type)
+        """Show a toast notification from either the UI or a worker thread."""
+        self.after(0, lambda: self.toast.show_toast(message, toast_type))
+
+    def confirm_rndis_driver_install(self, driver_name):
+        """Ask on the Tk thread whether the bundled Windows driver may be installed."""
+        def ask():
+            return messagebox.askyesno(
+                "RNDIS Driver Required",
+                f"Windows does not have the required RNDIS driver installed.\n\n"
+                f"Install the bundled {driver_name} driver now?\n\n"
+                "Windows will request administrator approval.",
+                parent=self,
+            )
+
+        if threading.current_thread() is threading.main_thread():
+            return ask()
+
+        result = []
+        completed = threading.Event()
+
+        def ask_on_ui_thread():
+            try:
+                result.append(ask())
+            finally:
+                completed.set()
+
+        self.after(0, ask_on_ui_thread)
+        completed.wait()
+        return bool(result and result[0])
     
     # Thread-safe UI adapter methods for autodetect
     def get_host(self) -> str:
@@ -851,6 +1303,19 @@ class PwnSafeCompactUI(ctk.CTk):
         """Get password value (thread-safe read)."""
         return self.password_var.get()
 
+    def get_connection_options(self):
+        """Capture all Tk-managed connection values before starting a worker."""
+        use_key = self.auth_dropdown.get() == "SSH Key"
+        return {
+            "host": self.host_entry.get().strip(),
+            "username": self.user_entry.get().strip(),
+            "password": "" if use_key else self.credential_entry.get(),
+            "auth_method": "ssh_key" if use_key else "password",
+            "ssh_key_path": self.ssh_key_path if use_key else "",
+            "ssh_key_passphrase": self.credential_entry.get() if use_key else "",
+            "use_ssh_agent": False,
+        }
+
     def set_password(self, value: str):
         """Set password value (main thread only)."""
         self.password_var.set(value)
@@ -864,14 +1329,6 @@ class PwnSafeCompactUI(ctk.CTk):
         Central API for updating connection state.
         Thread-safe: marshals updates to main Tk thread.
         """
-        color_map = {
-            ConnState.UNKNOWN:    "#6b7280",  # grey
-            ConnState.IDLE:       "#eab308",  # yellow
-            ConnState.CONNECTING: "#eab308",  # yellow
-            ConnState.CONNECTED:  "#22c55e",  # green
-            ConnState.ERROR:      "#ef4444",  # red
-        }
-        
         text_map = {
             ConnState.UNKNOWN:    "Not connected",
             ConnState.IDLE:       "Idle",
@@ -880,24 +1337,26 @@ class PwnSafeCompactUI(ctk.CTk):
             ConnState.ERROR:      "Connection error",
         }
         
-        dot_color = color_map.get(state, "#6b7280")
         status_text = msg if msg is not None else text_map.get(state, "")
-        
+
         def _apply():
             try:
-                self.status_bar.set_state(dot_color, status_text)
-                
-                # Enable/disable backup/restore buttons based on connection state
-                if hasattr(self, 'backup_button') and hasattr(self, 'restore_button'):
-                    is_connected = (state == ConnState.CONNECTED)
-                    btn_state = "normal" if is_connected else "disabled"
-                    self.backup_button.configure(state=btn_state)
-                    self.restore_button.configure(state=btn_state)
-            except Exception:
-                pass  # Safeguard against UI hiccups
+                self._conn_state = state
+                self._status_text = status_text
+                self._update_action_buttons()
+                if state == ConnState.CONNECTED:
+                    self._maybe_start_device_inspection()
+                elif state in (ConnState.UNKNOWN, ConnState.IDLE, ConnState.ERROR):
+                    self._device_inspection_key = None
+                    self.hostname_label.configure(
+                        text="Device hostname: Waiting for connection",
+                        text_color=self.colors['muted'],
+                    )
+            except Exception as error:
+                if hasattr(self, "log_service"):
+                    self.log_service.log(f"Could not update connection state: {error}", "WARNING")
         
         self.after(0, _apply)
-        self._conn_state = state
     
     def _on_live_monitor_changed(self):
         """Handle live monitor toggle."""
@@ -941,7 +1400,6 @@ class PwnSafeCompactUI(ctk.CTk):
 
     def _choose_backup_path(self):
         """Open save dialog for backup file."""
-        from pathlib import Path
         initial_file = self._default_backup_name()
         path = filedialog.asksaveasfilename(
             title="Save backup as...",
@@ -951,20 +1409,19 @@ class PwnSafeCompactUI(ctk.CTk):
             filetypes=[("Tar Gzip", "*.tgz"), ("All Files", "*.*")]
         )
         if path:
-            self._last_backup_dir = Path(path).parent
+            self._last_backup_dir = os.path.dirname(os.path.abspath(path))
             return path
         return None
 
     def _choose_restore_file(self):
         """Open file dialog for restore source."""
-        from pathlib import Path
         path = filedialog.askopenfilename(
             title="Select backup file to restore...",
             initialdir=str(self._last_backup_dir),
             filetypes=[("Tar Gzip", "*.tgz"), ("All Files", "*.*")]
         )
         if path:
-            self._last_backup_dir = Path(path).parent
+            self._last_backup_dir = os.path.dirname(os.path.abspath(path))
             return path
         return None
     
@@ -992,7 +1449,7 @@ class PwnSafeCompactUI(ctk.CTk):
         
         # Call app's backup method with path
         if hasattr(self.app, 'backup_to_path'):
-            self.app.backup_to_path(dest_path)
+            self.app.backup_to_path(dest_path, **self.get_connection_options())
         else:
             self.show_toast("Backup function not available", "error")
 
@@ -1009,8 +1466,7 @@ class PwnSafeCompactUI(ctk.CTk):
             return  # User cancelled
         
         # Verify file exists
-        from pathlib import Path
-        if not Path(src_path).exists():
+        if not os.path.isfile(src_path):
             self.show_toast("Backup file not found", "error")
             return
         
@@ -1026,6 +1482,6 @@ class PwnSafeCompactUI(ctk.CTk):
         
         # Call app's restore method with path
         if hasattr(self.app, 'restore_from_path'):
-            self.app.restore_from_path(src_path)
+            self.app.restore_from_path(src_path, **self.get_connection_options())
         else:
             self.show_toast("Restore function not available", "error")
