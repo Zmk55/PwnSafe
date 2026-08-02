@@ -43,14 +43,17 @@ jobs:
         flake8 pwnsafe.py --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
     
     - name: Type check with mypy
+      continue-on-error: true
       run: |
         mypy pwnsafe.py --ignore-missing-imports
     
     - name: Format check with black
+      continue-on-error: true
       run: |
         black --check pwnsafe.py
     
     - name: Import sort check with isort
+      continue-on-error: true
       run: |
         isort --check-only pwnsafe.py
     

@@ -2607,10 +2607,9 @@ and internet connection sharing capabilities."""
 
     def get_ssh_key_path(self):
         """Get the path to the SSH key file."""
-        home_dir = Path.home()
-        ssh_dir = home_dir / ".ssh"
-        ssh_dir.mkdir(exist_ok=True)
-        return ssh_dir / "pwnagotchi_key"
+        ssh_dir = os.path.join(os.path.expanduser("~"), ".ssh")
+        os.makedirs(ssh_dir, exist_ok=True)
+        return os.path.join(ssh_dir, "pwnagotchi_key")
 
     def test_ssh_certificate_connection_silent(self):
         """Test SSH certificate connection without UI updates."""
