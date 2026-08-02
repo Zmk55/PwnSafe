@@ -77,7 +77,7 @@ The build scripts automatically create distribution packages:
 
 ### Windows Package
 ```
-PwnSafe_v1.0.0_windows/
+PwnSafe_v1.4.0_windows/
 ├── PwnSafe.exe
 ├── run_pwnsafe.bat
 ├── README.md
@@ -87,7 +87,7 @@ PwnSafe_v1.0.0_windows/
 
 ### Linux Package
 ```
-PwnSafe_v1.0.0_linux/
+PwnSafe_v1.4.0_linux/
 ├── PwnSafe
 ├── run_pwnsafe.sh
 ├── README.md

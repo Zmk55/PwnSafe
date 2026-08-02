@@ -6,7 +6,7 @@
 
 **A Modern Hacker-Themed Backup & Restore Utility**
 
-[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/Zmk55/PwnSafe/releases)
+[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](https://github.com/Zmk55/PwnSafe/releases)
 [![Python](https://img.shields.io/badge/python-3.12+-green.svg)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg)](https://github.com/Zmk55/PwnSafe)
@@ -51,7 +51,7 @@ PwnSafe is a Python-based GUI utility designed to facilitate seamless backup and
 ### Download & Run
 [![Download](https://img.shields.io/badge/Download-Latest%20Release-green.svg)](https://github.com/Zmk55/PwnSafe/releases/latest)
 
-**Latest Version: v1.3.0**
+**Latest Version: v1.4.0**
 
 </div>
 

@@ -1,4 +1,4 @@
-__version__ = "1.0.0"
+__version__ = "1.4.0"
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox, Menu
@@ -62,7 +62,7 @@ class BackupRestoreApp(ctk.CTk):
         
         # Only set up UI if requested
         if use_ui:
-            self.title("PwnSafe v1.0.0 - Cyberpunk Backup & Restore Utility")
+            self.title("PwnSafe v1.4.0 - Cyberpunk Backup & Restore Utility")
             self.geometry("900x700")
             self.minsize(800, 600)
             
@@ -89,7 +89,7 @@ class BackupRestoreApp(ctk.CTk):
             
             self.header_label = ctk.CTkLabel(
                 self.header_frame, 
-                text="🔒 PwnSafe v1.0.0", 
+                text="🔒 PwnSafe v1.4.0",
                 font=ctk.CTkFont(size=22, weight="bold"),
                 text_color="#00ff00"
             )
@@ -304,7 +304,7 @@ class BackupRestoreApp(ctk.CTk):
         self.output_text.pack(fill="both", expand=True, padx=8, pady=8)
         
         # Initialize with welcome message
-        self.log_message("PwnSafe v1.0.0 - Cyberpunk Backup & Restore Utility", "INFO")
+        self.log_message("PwnSafe v1.4.0 - Cyberpunk Backup & Restore Utility", "INFO")
         self.log_message("System initialized. Ready for operations.", "SUCCESS")
         self.log_message("Automatic Pwnagotchi detection starting...", "INFO")
         
@@ -1230,7 +1230,7 @@ WARNING: This will overwrite existing data on your Pwnagotchi!"""
         # Title
         title_label = ctk.CTkLabel(
             main_frame,
-            text="PwnSafe v1.0.0",
+            text="PwnSafe v1.4.0",
             font=("Courier New", 24, "bold"),
             text_color="#00ff00"
         )

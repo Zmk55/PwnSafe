@@ -26,7 +26,7 @@ class MinimalPwnSafeUI(ctk.CTk):
         # Title
         title_label = ctk.CTkLabel(
             main_frame,
-            text="PwnSafe v1.0.0 - Compact UI Test",
+            text="PwnSafe v1.4.0 - Compact UI Test",
             font=ctk.CTkFont(size=18, weight="bold")
         )
         title_label.pack(pady=20)

@@ -152,7 +152,7 @@ class PwnSafeCompactUI(ctk.CTk):
     
     def _setup_window(self):
         """Setup window properties and geometry."""
-        self.title("PwnSafe v1.0.0")
+        self.title("PwnSafe v1.4.0")
         self.geometry("900x700")
         self.minsize(800, 600)
         
@@ -247,7 +247,7 @@ class PwnSafeCompactUI(ctk.CTk):
         # Title
         self.title_label = ctk.CTkLabel(
             self.header_frame,
-            text="PwnSafe v1.0.0",
+            text="PwnSafe v1.4.0",
             font=ctk.CTkFont(size=18, weight="bold"),
             text_color=self.colors['primary']
         )
