@@ -150,6 +150,58 @@ class BackupRestoreWorkerTests(unittest.TestCase):
         self.assertTrue(backend.configure_pwnagotchi_windows())
         backend._configure_windows_adapter_ip.assert_not_called()
 
+    @mock.patch("pwnsafe.shutil.which", return_value="/usr/bin/nmcli")
+    @mock.patch("pwnsafe.subprocess.run")
+    def test_linux_interface_configuration_uses_nmcli_static_address(self, run, _which):
+        def fake_run(command, **kwargs):
+            if command[:4] == ["nmcli", "-t", "-g", "GENERAL.CONNECTION"]:
+                return mock.Mock(returncode=0, stdout="Wired connection 3\n", stderr="")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        run.side_effect = fake_run
+        backend = _backend(None)
+        backend._linux_interface_has_expected_ip = lambda interface: True
+
+        self.assertTrue(backend._configure_linux_interface_ip("enx7281c8aefa05"))
+
+        modify_call = next(
+            call for call in run.call_args_list if call.args[0][:3] == ["nmcli", "connection", "modify"]
+        )
+        command = modify_call.args[0]
+        self.assertIn("Wired connection 3", command)
+        self.assertIn("ipv4.addresses", command)
+        self.assertIn("10.0.0.1/24", command)
+        self.assertIn("manual", command)
+
+        up_call = next(
+            call for call in run.call_args_list if call.args[0][:2] == ["nmcli", "connection"] and "up" in call.args[0]
+        )
+        self.assertIn("Wired connection 3", up_call.args[0])
+
+    @mock.patch("pwnsafe.socket.create_connection")
+    def test_linux_configuration_skips_nmcli_when_address_is_already_set(self, create_connection):
+        create_connection.return_value = mock.Mock()
+        backend = _backend(None)
+        backend.pwnagotchi_ip = "10.0.0.2"
+        backend.pwnagotchi_detected = False
+        backend._linux_interface_has_expected_ip = lambda interface: True
+        backend._configure_linux_interface_ip = mock.Mock()
+        backend.auto_configure_pwnagotchi = lambda: None
+
+        self.assertTrue(backend.configure_pwnagotchi_linux("enx7281c8aefa05"))
+        backend._configure_linux_interface_ip.assert_not_called()
+
+    def test_is_usb_gadget_interface_matches_known_gadget_drivers(self):
+        backend = _backend(None)
+
+        with mock.patch("pwnsafe.os.readlink", return_value="../../../../bus/usb/drivers/cdc_ether"), \
+                mock.patch("pwnsafe.os.path.realpath", return_value="/sys/devices/pci0000:00/usb1/1-9/1-9:1.0"):
+            self.assertTrue(backend._is_usb_gadget_interface("enx7281c8aefa05"))
+
+        with mock.patch("pwnsafe.os.readlink", return_value="../../../../bus/pci/drivers/e1000e"), \
+                mock.patch("pwnsafe.os.path.realpath", return_value="/sys/devices/pci0000:00/0000:00:1f.6"):
+            self.assertFalse(backend._is_usb_gadget_interface("enp0s31f6"))
+
     def test_ssh_connect_delegates_explicit_credentials(self):
         captured = {}
 

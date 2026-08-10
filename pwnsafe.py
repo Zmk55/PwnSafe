@@ -9,6 +9,7 @@ import platform
 import sys
 import subprocess
 import socket
+import shutil
 import time
 import webbrowser
 import shlex
@@ -56,8 +57,12 @@ class BackupRestoreApp(ctk.CTk):
         self.reconnection_monitoring = False
         self._rndis_install_prompted = False
         
-        # If not using UI, skip all UI initialization and return
+        # If not using UI, skip all UI initialization and return.
+        # ctk.CTk.__init__() above always creates a real Tk root even in this
+        # mode (the actual visible window is the separate PwnSafeCompactUI
+        # root) - withdraw it so it doesn't appear as a stray blank window.
         if not use_ui:
+            self.withdraw()
             return
         
         # Only set up UI if requested
@@ -1345,20 +1350,17 @@ and internet connection sharing capabilities."""
                     if pwnagotchi_interface:
                         self.pwnagotchi_interface = pwnagotchi_interface
                         self.log_message(f"Pwnagotchi interface found: {pwnagotchi_interface}", "SUCCESS")
-                        
-                        # Test connection to Pwnagotchi
-                        self.log_message("Testing SSH connection to Pwnagotchi...", "INFO")
-                        if self.test_pwnagotchi_connection():
-                            was_detected = self.pwnagotchi_detected
-                            self.pwnagotchi_detected = True
-                            self.auto_configure_pwnagotchi()
+
+                        # Actively configure the static IP and wait for SSH
+                        was_detected = self.pwnagotchi_detected
+                        if self.configure_pwnagotchi_linux(pwnagotchi_interface):
                             self.log_message("Pwnagotchi detected and configured successfully!", "SUCCESS")
                             self.log_message("Connection fields have been auto-filled", "SUCCESS")
-                            
+
                             # Offer SSH certificate setup if this is a new detection
                             if not was_detected:
                                 self.offer_ssh_certificate_setup()
-                            
+
                             # Start reconnection monitoring if we have a MAC address
                             if self.pwnagotchi_mac:
                                 self.start_reconnection_monitoring()
@@ -1368,7 +1370,6 @@ and internet connection sharing capabilities."""
                     else:
                         self.log_message("No Pwnagotchi interface detected", "WARNING")
                         self.log_message("Make sure Pwnagotchi is connected to DATA port", "INFO")
-                        self.log_message("Check if network interface is configured with 10.0.0.1/24", "INFO")
                         
                 except Exception as e:
                     self.log_message(f"Detection error: {e}", "ERROR")
@@ -1802,18 +1803,15 @@ and internet connection sharing capabilities."""
     def detect_pwnagotchi(self):
         """Detect Pwnagotchi device and auto-configure connection."""
         self.log_message(">>> Scanning for Pwnagotchi devices... <<<", "SYSTEM")
-        
+
         # Check for Pwnagotchi network interface
         pwnagotchi_interface = self.find_pwnagotchi_interface()
-        
+
         if pwnagotchi_interface:
             self.pwnagotchi_interface = pwnagotchi_interface
             self.log_message(f">>> Pwnagotchi interface detected: {pwnagotchi_interface} <<<", "SUCCESS")
-            
-            # Test connection to Pwnagotchi
-            if self.test_pwnagotchi_connection():
-                self.pwnagotchi_detected = True
-                self.auto_configure_pwnagotchi()
+
+            if self.configure_pwnagotchi_linux(pwnagotchi_interface):
                 self.log_message(">>> Pwnagotchi auto-configured successfully! <<<", "SUCCESS")
             else:
                 self.log_message(">>> Pwnagotchi detected but connection failed <<<", "WARNING")
@@ -1825,52 +1823,191 @@ and internet connection sharing capabilities."""
         try:
             # Get list of network interfaces
             result = subprocess.run(
-                ["ip", "-o", "link", "show"], 
+                ["ip", "-o", "link", "show"],
                 capture_output=True, text=True, check=True
             )
-            
+
             interfaces = []
             for line in result.stdout.splitlines():
                 if "state UP" in line and "lo:" not in line:
                     interface_name = line.split(':')[1].strip()
                     interfaces.append(interface_name)
-            
+
             # Check each interface for Pwnagotchi connection
             for interface in interfaces:
                 if self.is_pwnagotchi_interface(interface):
                     return interface
-                    
+
         except subprocess.CalledProcessError as e:
             self.log_message(f"Failed to detect network interfaces: {e}", "ERROR")
         except Exception as e:
             self.log_message(f"Error in interface detection: {e}", "ERROR")
-            
+
         return None
 
     def is_pwnagotchi_interface(self, interface):
         """Check if an interface is connected to a Pwnagotchi."""
+        # A Pi in USB gadget mode (RNDIS/CDC-ECM) is identifiable by its host-side
+        # driver alone, before any IP has been assigned - this is what lets us
+        # detect (and then configure) a brand new connection.
+        if self._is_usb_gadget_interface(interface):
+            return True
+
         try:
-            # Get IP configuration for the interface
+            # Fallback: an interface that already has a 10.0.0.x address
+            # (e.g. configured by a previous session) that answers a ping.
             result = subprocess.run(
-                ["ip", "addr", "show", interface], 
+                ["ip", "addr", "show", interface],
                 capture_output=True, text=True, check=True
             )
-            
-            # Check if interface has 10.0.0.x network configuration
+
             if "10.0.0." in result.stdout:
-                # Try to ping the Pwnagotchi IP
                 ping_result = subprocess.run(
                     ["ping", "-c", "1", "-W", "2", self.pwnagotchi_ip],
                     capture_output=True, text=True
                 )
                 return ping_result.returncode == 0
-                
+
         except subprocess.CalledProcessError:
             pass
         except Exception:
             pass
-            
+
         return False
+
+    def _is_usb_gadget_interface(self, interface):
+        """Check whether `interface` is a USB CDC/RNDIS Ethernet gadget (e.g. a Pi in gadget mode)."""
+        gadget_drivers = {"cdc_ether", "rndis_host", "cdc_ncm", "cdc_eem", "cdc_subset"}
+        driver_path = f"/sys/class/net/{interface}/device/driver"
+        try:
+            driver = os.path.basename(os.readlink(driver_path))
+        except OSError:
+            return False
+        if driver not in gadget_drivers:
+            return False
+        try:
+            device_path = os.path.realpath(f"/sys/class/net/{interface}/device")
+        except OSError:
+            return False
+        return "/usb" in device_path
+
+    def _linux_interface_has_expected_ip(self, interface):
+        """Check whether the host already has 10.0.0.1/24 applied to `interface`."""
+        try:
+            for address in psutil.net_if_addrs().get(interface, []):
+                if (
+                    address.family == socket.AF_INET
+                    and address.address == "10.0.0.1"
+                    and address.netmask == "255.255.255.0"
+                ):
+                    return True
+        except Exception as e:
+            self.log_message(f"Could not verify adapter address: {e}", "WARNING")
+        return False
+
+    def _configure_linux_interface_ip(self, interface):
+        """Assign a static 10.0.0.1/24 address to `interface`.
+
+        Prefers NetworkManager (`nmcli`), which on a normal desktop session can
+        modify the user's own connections without elevation. Falls back to
+        `pkexec ip addr add` when nmcli is unavailable (e.g. no NetworkManager).
+        """
+        if shutil.which("nmcli"):
+            show = subprocess.run(
+                ["nmcli", "-t", "-g", "GENERAL.CONNECTION", "device", "show", interface],
+                capture_output=True, text=True, timeout=10,
+            )
+            connection = show.stdout.strip().splitlines()[0] if show.stdout.strip() else ""
+
+            ipv4_args = [
+                "ipv4.method", "manual",
+                "ipv4.addresses", "10.0.0.1/24",
+                "ipv4.gateway", "",
+                "ipv4.dns", "",
+            ]
+
+            if not connection or connection == "--":
+                add = subprocess.run(
+                    ["nmcli", "connection", "add", "type", "ethernet",
+                     "ifname", interface, "con-name", "pwnsafe-pwnagotchi", *ipv4_args],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if add.returncode != 0:
+                    raise RuntimeError(add.stderr.strip() or add.stdout.strip() or "nmcli connection add failed")
+                connection = "pwnsafe-pwnagotchi"
+            else:
+                modify = subprocess.run(
+                    ["nmcli", "connection", "modify", connection, *ipv4_args],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if modify.returncode != 0:
+                    raise RuntimeError(modify.stderr.strip() or modify.stdout.strip() or "nmcli connection modify failed")
+
+            up = subprocess.run(
+                ["nmcli", "connection", "up", connection],
+                capture_output=True, text=True, timeout=20,
+            )
+            if up.returncode != 0:
+                raise RuntimeError(up.stderr.strip() or up.stdout.strip() or "nmcli connection up failed")
+        else:
+            add = subprocess.run(
+                ["pkexec", "ip", "addr", "add", "10.0.0.1/24", "dev", interface],
+                capture_output=True, text=True, timeout=15,
+            )
+            if add.returncode != 0 and "File exists" not in add.stderr:
+                raise RuntimeError(add.stderr.strip() or "ip addr add failed")
+            subprocess.run(
+                ["pkexec", "ip", "link", "set", interface, "up"],
+                capture_output=True, text=True, timeout=15,
+            )
+
+        for _ in range(30):
+            if self._linux_interface_has_expected_ip(interface):
+                return True
+            time.sleep(0.5)
+        return False
+
+    def configure_pwnagotchi_linux(self, interface):
+        """Assign and verify the Linux host address for the Pwnagotchi link, then wait for SSH."""
+        if not interface:
+            return False
+
+        try:
+            self.log_message(f"Configuring {interface}: IP 10.0.0.1/24", "INFO")
+            if self._linux_interface_has_expected_ip(interface):
+                self.log_message("Network interface is already configured", "INFO")
+            elif not self._configure_linux_interface_ip(interface):
+                raise RuntimeError("Linux did not apply 10.0.0.1/24 to the interface")
+
+            self.log_message("Network configuration verified: 10.0.0.1/24", "SUCCESS")
+            self.log_message("Waiting for Pwnagotchi SSH on 10.0.0.2...", "INFO")
+
+            for _ in range(20):
+                try:
+                    connection = socket.create_connection((self.pwnagotchi_ip, 22), timeout=1)
+                    connection.close()
+                    self.pwnagotchi_detected = True
+                    self.auto_configure_pwnagotchi()
+                    self.set_connection_state(ConnState.CONNECTED, "Pwnagotchi Connected and Ready!")
+                    self.log_message("Pwnagotchi connected and ready!", "SUCCESS")
+                    return True
+                except OSError:
+                    time.sleep(1)
+
+            self.log_message(
+                "Interface configured, but Pwnagotchi SSH never came up on 10.0.0.2. "
+                "This usually means the USB link itself is dropping packets - check "
+                "`dmesg | grep -i 'transmit queue'` for driver errors, try a different "
+                "USB port/cable, or unplug and reconnect the device.",
+                "WARNING",
+            )
+            self.set_connection_state(ConnState.CONNECTING, "Waiting for Pwnagotchi SSH...")
+            return False
+        except Exception as e:
+            self.log_message(f"Linux network configuration failed: {e}", "ERROR")
+            self.set_connection_state(ConnState.ERROR, "Network configuration failed")
+            self.show_toast(f"Network configuration failed: {e}", "error")
+            return False
 
     def test_pwnagotchi_connection(self):
         """Test SSH connection to Pwnagotchi."""
@@ -3540,12 +3677,9 @@ This should be the adapter that provides your internet connection (Wi-Fi, Ethern
             if pwnagotchi_interface:
                 self.pwnagotchi_interface = pwnagotchi_interface
                 self.log_message(f">>> Pwnagotchi interface found: {pwnagotchi_interface} <<<", "SUCCESS")
-                
-                if self.test_pwnagotchi_connection():
-                    self.pwnagotchi_detected = True
-                    self.auto_configure_pwnagotchi()
+
+                if self.configure_pwnagotchi_linux(pwnagotchi_interface):
                     self.log_message(">>> Pwnagotchi detected and configured! <<<", "SUCCESS")
-                    self.set_connection_state(ConnState.CONNECTED, "Pwnagotchi Connected and Ready!")
                     return
             
             # If not found, show guidance
@@ -3571,7 +3705,7 @@ This should be the adapter that provides your internet connection (Wi-Fi, Ethern
             self.log_message(">>> 3. PwnSafe will automatically detect and configure <<<", "INFO")
         else:
             self.log_message(">>> 1. Connect Pwnagotchi to USB DATA port <<<", "INFO")
-            self.log_message(">>> 2. Configure network interface with 10.0.0.1/24 <<<", "INFO")
+            self.log_message(">>> 2. Wait for the USB gadget interface to appear <<<", "INFO")
             self.log_message(">>> 3. PwnSafe will automatically detect and configure <<<", "INFO")
 
     def set_connection_state(self, state, msg=None):
